@@ -24,7 +24,13 @@ connectDB();
 
 const app = express();
 
-const allowedOrigins = (process.env.CLIENT_ORIGIN || "http://localhost:5173").split(",");
+const allowedOrigins = (
+  process.env.CLIENT_ORIGIN ||
+  "http://localhost:5173,https://zeno-inventory.vercel.app"
+)
+  .split(",")
+  .map((origin) => origin.trim())
+  .filter(Boolean);
 app.use(cors({ origin: allowedOrigins }));
 app.use(express.json());
 app.use(morgan("dev"));
@@ -56,8 +62,12 @@ app.use((req, res) => res.status(404).json({ message: "Route not found" }));
 // Central error handler
 app.use((err, req, res, next) => {
   console.error(err.stack);
-  res.status(err.status || 500).json({ message: err.message || "Server error" });
+  res
+    .status(err.status || 500)
+    .json({ message: err.message || "Server error" });
 });
 
 const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => console.log(`[server] Zeno API running on port ${PORT}`));
+app.listen(PORT, () =>
+  console.log(`[server] Zeno API running on port ${PORT}`),
+);
