@@ -24,14 +24,29 @@ connectDB();
 
 const app = express();
 
-const allowedOrigins = (
-  process.env.CLIENT_ORIGIN ||
-  "http://localhost:5173,https://zeno-inventory.vercel.app"
-)
-  .split(",")
-  .map((origin) => origin.trim())
-  .filter(Boolean);
-app.use(cors({ origin: allowedOrigins }));
+const allowedOrigins = [
+  "http://localhost:5173",
+  "https://zeno-inventory.vercel.app",
+  ...(process.env.CLIENT_ORIGIN || "")
+    .split(",")
+    .map((origin) => origin.trim())
+    .filter(Boolean),
+];
+
+app.use(
+  cors({
+    origin(origin, callback) {
+      if (!origin || allowedOrigins.includes(origin)) {
+        callback(null, true);
+        return;
+      }
+
+      callback(new Error(`CORS blocked for origin: ${origin}`));
+    },
+  }),
+);
+
+app.options("*", cors());
 app.use(express.json());
 app.use(morgan("dev"));
 
