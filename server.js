@@ -51,6 +51,8 @@ app.use(express.json());
 app.use(morgan("dev"));
 
 app.get("/api/health", (req, res) => res.json({ status: "ok" }));
+app.head("/api/health", (req, res) => res.sendStatus(204));
+app.get("/api/ping", (req, res) => res.sendStatus(204));
 
 // Package verification photos, e.g. GET /uploads/packages/169..-photo.jpg
 app.use("/uploads", express.static(path.join(__dirname, "uploads")));
