@@ -50,7 +50,7 @@ app.options("*", cors());
 app.use(express.json());
 app.use(morgan("dev"));
 
-app.get("/api/health", (req, res) => res.json({ status: "ok" }));
+app.get("/api/health", (req, res) => res.sendStatus(204));
 app.head("/api/health", (req, res) => res.sendStatus(204));
 app.get("/api/ping", (req, res) => res.sendStatus(204));
 
