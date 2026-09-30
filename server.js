@@ -50,9 +50,12 @@ app.options("*", cors());
 app.use(express.json());
 app.use(morgan("dev"));
 
-app.get("/api/health", (req, res) => res.sendStatus(204));
-app.head("/api/health", (req, res) => res.sendStatus(204));
-app.get("/api/ping", (req, res) => res.sendStatus(204));
+const healthHandler = (req, res) => res.status(200).type("text/plain").send("ok");
+
+app.get("/api/health", healthHandler);
+app.head("/api/health", (req, res) => res.sendStatus(200));
+app.get("/api/ping", healthHandler);
+app.get("/health", healthHandler);
 
 // Package verification photos, e.g. GET /uploads/packages/169..-photo.jpg
 app.use("/uploads", express.static(path.join(__dirname, "uploads")));
