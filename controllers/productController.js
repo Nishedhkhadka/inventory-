@@ -52,6 +52,42 @@ export const createProductType = async (req, res) => {
   }
 };
 
+export const updateProductType = async (req, res) => {
+  try {
+    const oldName = normalizeTypeName(req.params.typeName);
+    const newName = normalizeTypeName(req.body?.name || req.body?.type);
+
+    if (!oldName || !newName) {
+      return res.status(400).json({ message: "Type names are required" });
+    }
+
+    if (oldName === "Miscellaneous") {
+      return res
+        .status(400)
+        .json({ message: "Miscellaneous cannot be renamed" });
+    }
+
+    const result = await Product.updateMany(
+      { type: oldName },
+      { $set: { type: newName } },
+    );
+
+    await ProductType.findOneAndUpdate(
+      { name: oldName },
+      { name: newName },
+      { upsert: true, new: true },
+    );
+
+    res.json({
+      oldName,
+      newName,
+      updated: result.modifiedCount,
+    });
+  } catch (err) {
+    res.status(400).json({ message: err.message });
+  }
+};
+
 export const deleteProductType = async (req, res) => {
   try {
     const name = normalizeTypeName(req.params.typeName);
