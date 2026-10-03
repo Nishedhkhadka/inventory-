@@ -145,7 +145,10 @@ export const updatePurchaseCategory = async (req, res) => {
 export const deletePurchaseCategory = async (req, res) => {
   try {
     const name = normalizeCategoryName(
-      req.params?.categoryName || req.body?.categoryName || req.body?.name || req.body?.category,
+      req.params?.categoryName ||
+        req.body?.categoryName ||
+        req.body?.name ||
+        req.body?.category,
     );
     if (!name) {
       return res.status(400).json({ message: "Category name is required" });
