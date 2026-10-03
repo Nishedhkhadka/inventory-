@@ -7,6 +7,10 @@ import {
   deletePurchase,
   getPurchaseTags,
   getPurchaseCategories,
+  getPurchaseSuppliers,
+  createPurchaseCategory,
+  updatePurchaseCategory,
+  deletePurchaseCategory,
 } from "../controllers/purchaseController.js";
 import { exportPurchases } from "../controllers/exportController.js";
 
@@ -15,7 +19,16 @@ const router = express.Router();
 router.get("/export", exportPurchases);
 router.get("/tags", getPurchaseTags);
 router.get("/categories", getPurchaseCategories);
+router.post("/categories", createPurchaseCategory);
+router.put("/categories/:categoryName", updatePurchaseCategory);
+router.delete("/categories", deletePurchaseCategory);
+router.delete("/categories/:categoryName", deletePurchaseCategory);
+router.get("/suppliers", getPurchaseSuppliers);
 router.route("/").get(getPurchases).post(createPurchase);
-router.route("/:id").get(getPurchase).put(updatePurchase).delete(deletePurchase);
+router
+  .route("/:id")
+  .get(getPurchase)
+  .put(updatePurchase)
+  .delete(deletePurchase);
 
 export default router;

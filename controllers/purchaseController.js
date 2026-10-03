@@ -1,11 +1,24 @@
 import Purchase from "../models/Purchase.js";
 import Product from "../models/Product.js";
-import { reconcileStockForPurchase, reconcileCostPriceForPurchase } from "./inventoryService.js";
+import Contact from "../models/Contact.js";
+import {
+  reconcileStockForPurchase,
+  reconcileCostPriceForPurchase,
+} from "./inventoryService.js";
 
 // GET /api/purchases
 export const getPurchases = async (req, res) => {
   try {
-    const { search, status, category, tag, from, to, page = 1, limit = 20 } = req.query;
+    const {
+      search,
+      status,
+      category,
+      tag,
+      from,
+      to,
+      page = 1,
+      limit = 20,
+    } = req.query;
     const filter = {};
 
     if (status) filter.status = status;
@@ -35,7 +48,12 @@ export const getPurchases = async (req, res) => {
       Purchase.countDocuments(filter),
     ]);
 
-    res.json({ data: purchases, total, page: Number(page), pages: Math.ceil(total / limit) });
+    res.json({
+      data: purchases,
+      total,
+      page: Number(page),
+      pages: Math.ceil(total / limit),
+    });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
@@ -54,15 +72,168 @@ export const getPurchaseTags = async (req, res) => {
 
 // A starting set so the category picker isn't empty on a fresh database —
 // merged with whatever custom categories have actually been used.
-const BASELINE_CATEGORIES = ["Inventory", "Meta Ads", "Packaging", "Shipping", "Miscellaneous"];
+const BASELINE_CATEGORIES = [
+  "Inventory",
+  "Meta Ads",
+  "Packaging",
+  "Shipping",
+  "Miscellaneous",
+];
+
+const normalizeCategoryName = (value) =>
+  String(value || "")
+    .replace(/\s+/g, " ")
+    .trim();
+
+const listPurchaseCategories = async () => {
+  const used = await Purchase.distinct("category");
+  return [...new Set([...BASELINE_CATEGORIES, ...used.filter(Boolean)])].sort();
+};
 
 // GET /api/purchases/categories — baseline categories plus any custom ones
 // already in use, for the Expenses page's category picker.
 export const getPurchaseCategories = async (req, res) => {
   try {
-    const used = await Purchase.distinct("category");
-    const categories = [...new Set([...BASELINE_CATEGORIES, ...used.filter(Boolean)])].sort();
+    const categories = await listPurchaseCategories();
     res.json(categories);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
+export const createPurchaseCategory = async (req, res) => {
+  try {
+    const name = normalizeCategoryName(req.body?.name || req.body?.category);
+    if (!name) {
+      return res.status(400).json({ message: "Category name is required" });
+    }
+
+    const categories = await listPurchaseCategories();
+    const merged = [...new Set([...categories, name])].sort();
+    res.status(201).json({ name, categories: merged });
+  } catch (err) {
+    res.status(400).json({ message: err.message });
+  }
+};
+
+export const updatePurchaseCategory = async (req, res) => {
+  try {
+    const oldName = normalizeCategoryName(req.params.categoryName);
+    const newName = normalizeCategoryName(req.body?.name || req.body?.category);
+
+    if (!oldName || !newName) {
+      return res.status(400).json({ message: "Category names are required" });
+    }
+
+    const result = await Purchase.updateMany(
+      { category: oldName },
+      { $set: { category: newName } },
+    );
+
+    const categories = await listPurchaseCategories();
+    res.json({
+      oldName,
+      newName,
+      updated: result.modifiedCount,
+      categories,
+    });
+  } catch (err) {
+    res.status(400).json({ message: err.message });
+  }
+};
+
+export const deletePurchaseCategory = async (req, res) => {
+  try {
+    const name = normalizeCategoryName(
+      req.params?.categoryName || req.body?.categoryName || req.body?.name || req.body?.category,
+    );
+    if (!name) {
+      return res.status(400).json({ message: "Category name is required" });
+    }
+
+    const result = await Purchase.updateMany(
+      { category: name },
+      { $set: { category: "Miscellaneous" } },
+    );
+
+    const categories = await listPurchaseCategories();
+    res.json({
+      deleted: name,
+      movedTo: "Miscellaneous",
+      updated: result.modifiedCount,
+      categories,
+    });
+  } catch (err) {
+    res.status(400).json({ message: err.message });
+  }
+};
+
+// GET /api/purchases/suppliers — directory of supplier names and summary metrics.
+export const getPurchaseSuppliers = async (req, res) => {
+  try {
+    const suppliers = await Purchase.aggregate([
+      { $match: { supplier: { $exists: true, $ne: "" } } },
+      {
+        $group: {
+          _id: "$supplier",
+          totalPurchases: { $sum: 1 },
+          totalSpent: { $sum: { $ifNull: ["$cost", 0] } },
+          lastOrderDate: { $max: "$orderDate" },
+          pending: {
+            $sum: {
+              $cond: [{ $ne: ["$status", "Paid"] }, 1, 0],
+            },
+          },
+          paid: {
+            $sum: {
+              $cond: [{ $eq: ["$status", "Paid"] }, 1, 0],
+            },
+          },
+        },
+      },
+      {
+        $project: {
+          _id: 0,
+          name: "$_id",
+          totalPurchases: 1,
+          totalSpent: 1,
+          lastOrderDate: 1,
+          pending: 1,
+          paid: 1,
+        },
+      },
+      { $sort: { lastOrderDate: -1, totalSpent: -1 } },
+    ]);
+
+    const contactNames = suppliers
+      .map((supplier) => supplier.name)
+      .filter(Boolean);
+    const contacts = await Contact.find({
+      name: { $in: contactNames.length ? contactNames : ["__none__"] },
+    }).lean();
+    const contactByName = new Map(
+      contacts.map((contact) => [
+        String(contact.name).trim().toLowerCase(),
+        contact,
+      ]),
+    );
+
+    const enrichedSuppliers = suppliers.map((supplier) => {
+      const match = contactByName.get(
+        String(supplier.name).trim().toLowerCase(),
+      );
+      return {
+        ...supplier,
+        company: match?.company || "",
+        phone: match?.phone || "",
+        email: match?.email || "",
+        address: match?.address || "",
+        notes: match?.notes || "",
+        category: match?.category || "Supplier",
+      };
+    });
+
+    res.json(enrichedSuppliers);
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
@@ -72,7 +243,8 @@ export const getPurchaseCategories = async (req, res) => {
 export const getPurchase = async (req, res) => {
   try {
     const purchase = await Purchase.findById(req.params.id).populate("product");
-    if (!purchase) return res.status(404).json({ message: "Purchase not found" });
+    if (!purchase)
+      return res.status(404).json({ message: "Purchase not found" });
     res.json(purchase);
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -84,7 +256,8 @@ export const createPurchase = async (req, res) => {
   try {
     if (req.body.product) {
       const product = await Product.findById(req.body.product);
-      if (!product) return res.status(400).json({ message: "Product not found" });
+      if (!product)
+        return res.status(400).json({ message: "Product not found" });
       // Keep productName in sync so records stay readable even if the
       // catalog product is later renamed or removed.
       req.body.productName = req.body.productName || product.name;
@@ -115,7 +288,10 @@ export const createPurchase = async (req, res) => {
       });
     }
 
-    const populated = await purchase.populate("product", "name sku type currentStock colors");
+    const populated = await purchase.populate(
+      "product",
+      "name sku type currentStock colors",
+    );
     res.status(201).json(populated);
   } catch (err) {
     res.status(400).json({ message: err.message });
@@ -129,7 +305,8 @@ export const createPurchase = async (req, res) => {
 export const updatePurchase = async (req, res) => {
   try {
     const existing = await Purchase.findById(req.params.id);
-    if (!existing) return res.status(404).json({ message: "Purchase not found" });
+    if (!existing)
+      return res.status(404).json({ message: "Purchase not found" });
 
     const oldStatus = existing.status;
     const oldQuantity = existing.quantity || 0;
@@ -138,7 +315,8 @@ export const updatePurchase = async (req, res) => {
 
     if (req.body.product) {
       const product = await Product.findById(req.body.product);
-      if (!product) return res.status(400).json({ message: "Product not found" });
+      if (!product)
+        return res.status(400).json({ message: "Product not found" });
     }
 
     Object.assign(existing, req.body);
@@ -203,7 +381,10 @@ export const updatePurchase = async (req, res) => {
       });
     }
 
-    const populated = await existing.populate("product", "name sku type currentStock colors");
+    const populated = await existing.populate(
+      "product",
+      "name sku type currentStock colors",
+    );
     res.json(populated);
   } catch (err) {
     res.status(400).json({ message: err.message });
@@ -214,7 +395,8 @@ export const updatePurchase = async (req, res) => {
 export const deletePurchase = async (req, res) => {
   try {
     const purchase = await Purchase.findById(req.params.id);
-    if (!purchase) return res.status(404).json({ message: "Purchase not found" });
+    if (!purchase)
+      return res.status(404).json({ message: "Purchase not found" });
 
     if (purchase.product) {
       await reconcileStockForPurchase({

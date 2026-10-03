@@ -8,7 +8,7 @@ const colorVariantSchema = new mongoose.Schema(
     name: { type: String, required: true, trim: true },
     stock: { type: Number, default: 0, min: 0 },
   },
-  { _id: false }
+  { _id: false },
 );
 
 const productSchema = new mongoose.Schema(
@@ -27,8 +27,8 @@ const productSchema = new mongoose.Schema(
     },
     type: {
       type: String,
-      enum: ["Lamp", "Wallet", "Pouch", "Decor", "Packaging"],
       required: true,
+      trim: true,
     },
     retailPrice: {
       type: Number,
@@ -57,7 +57,7 @@ const productSchema = new mongoose.Schema(
       default: [],
     },
   },
-  { timestamps: true }
+  { timestamps: true },
 );
 
 productSchema.virtual("isLowStock").get(function () {

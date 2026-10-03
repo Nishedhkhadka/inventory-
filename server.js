@@ -14,6 +14,7 @@ import searchRoutes from "./routes/search.js";
 import importRoutes from "./routes/import.js";
 import packagingRoutes from "./routes/packaging.routes.js";
 import exportRoutes from "./routes/export.js";
+import contactRoutes from "./routes/contacts.js";
 import authRoutes from "./routes/auth.js";
 import { protect } from "./middleware/auth.js";
 
@@ -50,7 +51,8 @@ app.options("*", cors());
 app.use(express.json());
 app.use(morgan("dev"));
 
-const healthHandler = (req, res) => res.status(200).type("text/plain").send("ok");
+const healthHandler = (req, res) =>
+  res.status(200).type("text/plain").send("ok");
 
 app.get("/api/health", healthHandler);
 app.head("/api/health", (req, res) => res.sendStatus(200));
@@ -75,6 +77,7 @@ app.use("/api/search", searchRoutes);
 app.use("/api/import", importRoutes);
 app.use("/api/packaging", packagingRoutes);
 app.use("/api/export", exportRoutes);
+app.use("/api/contacts", contactRoutes);
 
 // 404 fallback
 app.use((req, res) => res.status(404).json({ message: "Route not found" }));

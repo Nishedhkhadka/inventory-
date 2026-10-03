@@ -1,5 +1,84 @@
 import Product from "../models/Product.js";
+import ProductType from "../models/ProductType.js";
 import StockLog from "../models/StockLog.js";
+
+const BASELINE_TYPES = [
+  "Lamp",
+  "Wallet",
+  "Pouch",
+  "Decor",
+  "Packaging",
+  "Miscellaneous",
+];
+
+const normalizeTypeName = (value) =>
+  String(value || "")
+    .replace(/\s+/g, " ")
+    .trim();
+
+export const getProductTypes = async (req, res) => {
+  try {
+    const distinct = await Product.distinct("type");
+    const savedTypes = await ProductType.find({}).sort({ name: 1 }).lean();
+    const merged = [
+      ...new Set([
+        ...BASELINE_TYPES,
+        ...distinct.filter(Boolean),
+        ...savedTypes.map((type) => type.name).filter(Boolean),
+      ]),
+    ].sort((a, b) => a.localeCompare(b));
+
+    res.json(merged);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
+export const createProductType = async (req, res) => {
+  try {
+    const name = normalizeTypeName(req.body?.name || req.body?.type);
+    if (!name)
+      return res.status(400).json({ message: "Type name is required" });
+
+    const productType = await ProductType.findOneAndUpdate(
+      { name },
+      { name },
+      { upsert: true, new: true, setDefaultsOnInsert: true },
+    );
+
+    res.status(201).json(productType);
+  } catch (err) {
+    res.status(400).json({ message: err.message });
+  }
+};
+
+export const deleteProductType = async (req, res) => {
+  try {
+    const name = normalizeTypeName(req.params.typeName);
+    if (!name)
+      return res.status(400).json({ message: "Type name is required" });
+
+    if (name === "Miscellaneous") {
+      return res
+        .status(400)
+        .json({ message: "Miscellaneous cannot be deleted" });
+    }
+
+    const result = await Product.updateMany(
+      { type: name },
+      { $set: { type: "Miscellaneous" } },
+    );
+
+    await ProductType.deleteOne({ name });
+    res.json({
+      message: "Type deleted",
+      movedTo: "Miscellaneous",
+      updated: result.modifiedCount,
+    });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+};
 
 // GET /api/products
 export const getProducts = async (req, res) => {
@@ -56,15 +135,20 @@ export const createProduct = async (req, res) => {
 export const updateProduct = async (req, res) => {
   try {
     const existing = await Product.findById(req.params.id);
-    if (!existing) return res.status(404).json({ message: "Product not found" });
+    if (!existing)
+      return res.status(404).json({ message: "Product not found" });
 
     const { stockChangeComment, ...updates } = req.body;
     const newStock =
-      updates.currentStock !== undefined ? Number(updates.currentStock) : existing.currentStock;
+      updates.currentStock !== undefined
+        ? Number(updates.currentStock)
+        : existing.currentStock;
     const stockChanged = newStock !== existing.currentStock;
 
     if (stockChanged && !String(stockChangeComment || "").trim()) {
-      return res.status(400).json({ message: "Please provide a reason for this stock change." });
+      return res
+        .status(400)
+        .json({ message: "Please provide a reason for this stock change." });
     }
 
     const product = await Product.findByIdAndUpdate(req.params.id, updates, {
@@ -92,7 +176,9 @@ export const updateProduct = async (req, res) => {
 // stock edits, newest first.
 export const getProductStockLog = async (req, res) => {
   try {
-    const logs = await StockLog.find({ product: req.params.id }).sort({ createdAt: -1 });
+    const logs = await StockLog.find({ product: req.params.id }).sort({
+      createdAt: -1,
+    });
     res.json(logs);
   } catch (err) {
     res.status(500).json({ message: err.message });

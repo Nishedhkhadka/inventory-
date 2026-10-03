@@ -3,6 +3,7 @@ import PDFDocument from "pdfkit";
 import Sale from "../models/Sale.js";
 import Purchase from "../models/Purchase.js";
 import Product from "../models/Product.js";
+import Contact from "../models/Contact.js";
 import { getPnLData } from "./pnlData.js";
 
 function dateRangeMatch(field, from, to) {
@@ -45,7 +46,8 @@ function salesRow(s) {
   // null deliveryFeeCharged means "not recorded" (historical data) — kept
   // as a blank cell rather than 0, and grandTotal is left as just the
   // line total in that case rather than silently implying free delivery.
-  const feeKnown = s.deliveryFeeCharged !== null && s.deliveryFeeCharged !== undefined;
+  const feeKnown =
+    s.deliveryFeeCharged !== null && s.deliveryFeeCharged !== undefined;
   return {
     orderId: s.orderId,
     product: s.product?.name || "—",
@@ -58,7 +60,8 @@ function salesRow(s) {
     discount: money(s.discount),
     deliveryFeeCharged: feeKnown ? money(s.deliveryFeeCharged) : "",
     deliveryCost: money(s.deliveryCost),
-    grandTotal: money(s.lineTotal) + (feeKnown ? money(s.deliveryFeeCharged) : 0),
+    grandTotal:
+      money(s.lineTotal) + (feeKnown ? money(s.deliveryFeeCharged) : 0),
     deliveryPartner: s.deliveryPartner || "",
     pointOfContact: s.pointOfContact || "",
     customerPhone: s.customerPhone || "",
@@ -72,6 +75,9 @@ const PURCHASE_COLUMNS = [
   { header: "Colour", key: "color", width: 12 },
   { header: "Category", key: "category", width: 14 },
   { header: "Supplier", key: "supplier", width: 20 },
+  { header: "Supplier phone", key: "supplierPhone", width: 16 },
+  { header: "Supplier email", key: "supplierEmail", width: 22 },
+  { header: "Supplier address", key: "supplierAddress", width: 28 },
   { header: "Status", key: "status", width: 12 },
   { header: "Quantity", key: "quantity", width: 10 },
   { header: "Cost", key: "cost", width: 12 },
@@ -82,12 +88,15 @@ const PURCHASE_COLUMNS = [
   { header: "Notes", key: "notes", width: 30 },
 ];
 
-function purchaseRow(p) {
+function purchaseRow(p, contact) {
   return {
     productName: p.productName,
     color: p.color || "",
     category: p.category,
     supplier: p.supplier || "",
+    supplierPhone: contact?.phone || "",
+    supplierEmail: contact?.email || "",
+    supplierAddress: contact?.address || "",
     status: p.status,
     quantity: p.quantity || "",
     cost: money(p.cost),
@@ -132,7 +141,9 @@ export const exportSales = async (req, res) => {
     const filter = { ...dateRangeMatch("orderDate", from, to) };
     if (status) filter.status = status;
 
-    const sales = await Sale.find(filter).populate("product", "name sku").sort({ orderDate: -1 });
+    const sales = await Sale.find(filter)
+      .populate("product", "name sku")
+      .sort({ orderDate: -1 });
 
     const workbook = new ExcelJS.Workbook();
     const sheet = workbook.addWorksheet("Sales");
@@ -143,9 +154,12 @@ export const exportSales = async (req, res) => {
 
     res.setHeader(
       "Content-Type",
-      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     );
-    res.setHeader("Content-Disposition", "attachment; filename=zeno-sales.xlsx");
+    res.setHeader(
+      "Content-Disposition",
+      "attachment; filename=zeno-sales.xlsx",
+    );
     await workbook.xlsx.write(res);
     res.end();
   } catch (err) {
@@ -161,20 +175,40 @@ export const exportPurchases = async (req, res) => {
     if (category) filter.category = category;
     if (status) filter.status = status;
 
-    const purchases = await Purchase.find(filter).populate("product", "name sku").sort({ orderDate: -1 });
+    const purchases = await Purchase.find(filter)
+      .populate("product", "name sku")
+      .sort({ orderDate: -1 });
+    const contacts = await Contact.find({
+      name: { $in: purchases.map((p) => p.supplier).filter(Boolean) },
+    }).lean();
+    const contactByName = new Map(
+      contacts.map((contact) => [
+        String(contact.name).trim().toLowerCase(),
+        contact,
+      ]),
+    );
 
     const workbook = new ExcelJS.Workbook();
     const sheet = workbook.addWorksheet("Expenses");
     sheet.columns = PURCHASE_COLUMNS;
     sheet.getRow(1).font = { bold: true };
 
-    purchases.forEach((p) => sheet.addRow(purchaseRow(p)));
+    purchases.forEach((p) => {
+      const key = String(p.supplier || "")
+        .trim()
+        .toLowerCase();
+      const contact = key ? contactByName.get(key) : null;
+      sheet.addRow(purchaseRow(p, contact));
+    });
 
     res.setHeader(
       "Content-Type",
-      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     );
-    res.setHeader("Content-Disposition", "attachment; filename=zeno-expenses.xlsx");
+    res.setHeader(
+      "Content-Disposition",
+      "attachment; filename=zeno-expenses.xlsx",
+    );
     await workbook.xlsx.write(res);
     res.end();
   } catch (err) {
@@ -204,22 +238,40 @@ async function sendPnLXlsx(res, pnl) {
   ];
 
   const rangeLabel = `${pnl.range.from || "All time"} → ${pnl.range.to || "present"}`;
-  sheet.addRow({ label: "Zeno — Profit & Loss Statement", value: "" }).font = { bold: true, size: 14 };
+  sheet.addRow({ label: "Zeno — Profit & Loss Statement", value: "" }).font = {
+    bold: true,
+    size: 14,
+  };
   sheet.addRow({ label: rangeLabel, value: "" });
   sheet.addRow({});
   sheet.addRow({ label: "Revenue", value: money(pnl.revenue) });
   sheet.addRow({ label: "Cost of Goods Sold", value: -money(pnl.cogs) });
-  sheet.addRow({ label: "Gross Profit", value: money(pnl.grossProfit) }).font = { bold: true };
-  sheet.addRow({ label: "Gross Margin %", value: `${pnl.grossMarginPct.toFixed(1)}%` });
+  sheet.addRow({ label: "Gross Profit", value: money(pnl.grossProfit) }).font =
+    { bold: true };
+  sheet.addRow({
+    label: "Gross Margin %",
+    value: `${pnl.grossMarginPct.toFixed(1)}%`,
+  });
   sheet.addRow({});
-  sheet.addRow({ label: "Operating Expenses", value: "" }).font = { bold: true };
+  sheet.addRow({ label: "Operating Expenses", value: "" }).font = {
+    bold: true,
+  };
   pnl.operatingExpenseBreakdown.forEach((e) =>
-    sheet.addRow({ label: `  ${e.category}`, value: -money(e.total) })
+    sheet.addRow({ label: `  ${e.category}`, value: -money(e.total) }),
   );
-  sheet.addRow({ label: "Total Operating Expenses", value: -money(pnl.operatingExpenses) });
+  sheet.addRow({
+    label: "Total Operating Expenses",
+    value: -money(pnl.operatingExpenses),
+  });
   sheet.addRow({});
-  sheet.addRow({ label: "Delivery fees collected (from customers)", value: money(pnl.deliveryFeesCollected) });
-  sheet.addRow({ label: "Delivery cost (paid to courier)", value: -money(pnl.deliveryCost) });
+  sheet.addRow({
+    label: "Delivery fees collected (from customers)",
+    value: money(pnl.deliveryFeesCollected),
+  });
+  sheet.addRow({
+    label: "Delivery cost (paid to courier)",
+    value: -money(pnl.deliveryCost),
+  });
   if (pnl.ordersWithUnknownDeliveryFee > 0) {
     sheet.addRow({
       label: `  (${pnl.ordersWithUnknownDeliveryFee} delivered order(s) have no recorded customer delivery fee — historical data)`,
@@ -227,16 +279,27 @@ async function sendPnLXlsx(res, pnl) {
     });
   }
   sheet.addRow({});
-  sheet.addRow({ label: "Net Profit", value: money(pnl.netProfit) }).font = { bold: true };
-  sheet.addRow({ label: "Net Margin %", value: `${pnl.netMarginPct.toFixed(1)}%` });
+  sheet.addRow({ label: "Net Profit", value: money(pnl.netProfit) }).font = {
+    bold: true,
+  };
+  sheet.addRow({
+    label: "Net Margin %",
+    value: `${pnl.netMarginPct.toFixed(1)}%`,
+  });
   sheet.addRow({});
-  sheet.addRow({ label: "Inventory purchased (capitalized, not expensed)", value: money(pnl.inventoryCapitalized) });
+  sheet.addRow({
+    label: "Inventory purchased (capitalized, not expensed)",
+    value: money(pnl.inventoryCapitalized),
+  });
 
   res.setHeader(
     "Content-Type",
-    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
   );
-  res.setHeader("Content-Disposition", "attachment; filename=zeno-pnl-statement.xlsx");
+  res.setHeader(
+    "Content-Disposition",
+    "attachment; filename=zeno-pnl-statement.xlsx",
+  );
   await workbook.xlsx.write(res);
   res.end();
 }
@@ -244,11 +307,15 @@ async function sendPnLXlsx(res, pnl) {
 function sendPnLPdf(res, pnl) {
   const doc = new PDFDocument({ margin: 50 });
   res.setHeader("Content-Type", "application/pdf");
-  res.setHeader("Content-Disposition", "attachment; filename=zeno-pnl-statement.pdf");
+  res.setHeader(
+    "Content-Disposition",
+    "attachment; filename=zeno-pnl-statement.pdf",
+  );
   doc.pipe(res);
 
   const rangeLabel = `${pnl.range.from || "All time"}  →  ${pnl.range.to || "present"}`;
-  const fmt = (n) => `$${money(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  const fmt = (n) =>
+    `$${money(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
   doc.fontSize(20).text("Zeno — Profit & Loss Statement", { align: "left" });
   doc.fontSize(10).fillColor("#726C5F").text(rangeLabel);
@@ -256,7 +323,9 @@ function sendPnLPdf(res, pnl) {
   doc.fillColor("#211F1B");
 
   const line = (label, value, opts = {}) => {
-    doc.fontSize(opts.size || 11).font(opts.bold ? "Helvetica-Bold" : "Helvetica");
+    doc
+      .fontSize(opts.size || 11)
+      .font(opts.bold ? "Helvetica-Bold" : "Helvetica");
     doc.text(label, { continued: true });
     doc.text(value, { align: "right" });
   };
@@ -270,18 +339,23 @@ function sendPnLPdf(res, pnl) {
 
   doc.font("Helvetica-Bold").text("Operating Expenses");
   doc.font("Helvetica");
-  pnl.operatingExpenseBreakdown.forEach((e) => line(`  ${e.category}`, `(${fmt(e.total)})`));
+  pnl.operatingExpenseBreakdown.forEach((e) =>
+    line(`  ${e.category}`, `(${fmt(e.total)})`),
+  );
   line("Total Operating Expenses", `(${fmt(pnl.operatingExpenses)})`);
   doc.moveDown(0.8);
 
-  line("Delivery fees collected (from customers)", fmt(pnl.deliveryFeesCollected));
+  line(
+    "Delivery fees collected (from customers)",
+    fmt(pnl.deliveryFeesCollected),
+  );
   line("Delivery cost (paid to courier)", `(${fmt(pnl.deliveryCost)})`);
   if (pnl.ordersWithUnknownDeliveryFee > 0) {
     doc
       .fontSize(8)
       .fillColor("#726C5F")
       .text(
-        `${pnl.ordersWithUnknownDeliveryFee} delivered order(s) have no recorded customer delivery fee (historical data) — not counted as $0 above.`
+        `${pnl.ordersWithUnknownDeliveryFee} delivered order(s) have no recorded customer delivery fee (historical data) — not counted as $0 above.`,
       );
     doc.fillColor("#211F1B");
   }
@@ -291,9 +365,12 @@ function sendPnLPdf(res, pnl) {
   line("Net Margin", `${pnl.netMarginPct.toFixed(1)}%`);
   doc.moveDown(0.8);
 
-  doc.fontSize(9).fillColor("#726C5F").text(
-    `Inventory purchased in this range: ${fmt(pnl.inventoryCapitalized)} (capitalized — expensed only as units sell, not shown above).`
-  );
+  doc
+    .fontSize(9)
+    .fillColor("#726C5F")
+    .text(
+      `Inventory purchased in this range: ${fmt(pnl.inventoryCapitalized)} (capitalized — expensed only as units sell, not shown above).`,
+    );
 
   doc.end();
 }
@@ -319,9 +396,12 @@ export const exportProducts = async (req, res) => {
 
     res.setHeader(
       "Content-Type",
-      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     );
-    res.setHeader("Content-Disposition", "attachment; filename=zeno-inventory.xlsx");
+    res.setHeader(
+      "Content-Disposition",
+      "attachment; filename=zeno-inventory.xlsx",
+    );
     await workbook.xlsx.write(res);
     res.end();
   } catch (err) {
@@ -341,8 +421,12 @@ export const exportAll = async (req, res) => {
     const purchaseFilter = { ...dateRangeMatch("orderDate", from, to) };
 
     const [sales, purchases, products] = await Promise.all([
-      Sale.find(saleFilter).populate("product", "name sku").sort({ orderDate: -1 }),
-      Purchase.find(purchaseFilter).populate("product", "name sku").sort({ orderDate: -1 }),
+      Sale.find(saleFilter)
+        .populate("product", "name sku")
+        .sort({ orderDate: -1 }),
+      Purchase.find(purchaseFilter)
+        .populate("product", "name sku")
+        .sort({ orderDate: -1 }),
       Product.find({}).sort({ name: 1 }),
     ]);
 
@@ -365,9 +449,12 @@ export const exportAll = async (req, res) => {
 
     res.setHeader(
       "Content-Type",
-      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     );
-    res.setHeader("Content-Disposition", "attachment; filename=zeno-full-export.xlsx");
+    res.setHeader(
+      "Content-Disposition",
+      "attachment; filename=zeno-full-export.xlsx",
+    );
     await workbook.xlsx.write(res);
     res.end();
   } catch (err) {

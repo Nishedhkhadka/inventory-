@@ -20,10 +20,13 @@ import XLSX from "xlsx";
 import Product from "../models/Product.js";
 import Purchase from "../models/Purchase.js";
 import Sale from "../models/Sale.js";
+import Contact from "../models/Contact.js";
 
 // ───────────────────── header normalization ─────────────────────
 function normalizeKey(k) {
-  return String(k || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+  return String(k || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, "");
 }
 
 const ALIASES = {
@@ -70,6 +73,11 @@ const ALIASES = {
   item: "product",
   category: "category",
   supplier: "pointOfContact",
+  supplierphone: "supplierPhone",
+  supplieremail: "supplierEmail",
+  supplieraddress: "supplierAddress",
+  suppliercompany: "supplierCompany",
+  suppliernotes: "supplierNotes",
   tags: "tags",
 };
 
@@ -86,7 +94,7 @@ function normalizeRow(row) {
 function findSheet(workbook, wantedNames) {
   const names = Array.isArray(wantedNames) ? wantedNames : [wantedNames];
   const match = workbook.SheetNames.find((n) =>
-    names.some((name) => n.toLowerCase().trim() === name.toLowerCase())
+    names.some((name) => n.toLowerCase().trim() === name.toLowerCase()),
   );
   return match ? workbook.Sheets[match] : null;
 }
@@ -127,8 +135,56 @@ function toNumberOrNull(value) {
 
 function truthy(value) {
   if (typeof value === "boolean") return value;
-  const s = String(value || "").trim().toLowerCase();
+  const s = String(value || "")
+    .trim()
+    .toLowerCase();
   return ["true", "yes", "y", "1"].includes(s);
+}
+
+async function syncSupplierContact(row) {
+  const supplierName = String(row.supplier || row.pointOfContact || "").trim();
+  if (!supplierName) return;
+
+  const supplierPhone = String(
+    row.supplierPhone || row.supplierphone || "",
+  ).trim();
+  const supplierEmail = String(
+    row.supplierEmail || row.supplieremail || "",
+  ).trim();
+  const supplierAddress = String(
+    row.supplierAddress || row.supplieraddress || "",
+  ).trim();
+  const supplierCompany = String(
+    row.supplierCompany || row.suppliercompany || "",
+  ).trim();
+  const supplierNotes = String(
+    row.supplierNotes || row.suppliernotes || "",
+  ).trim();
+
+  if (
+    !supplierPhone &&
+    !supplierEmail &&
+    !supplierAddress &&
+    !supplierCompany &&
+    !supplierNotes
+  ) {
+    return;
+  }
+
+  await Contact.findOneAndUpdate(
+    { name: supplierName },
+    {
+      name: supplierName,
+      company: supplierCompany || undefined,
+      phone: supplierPhone || undefined,
+      email: supplierEmail || undefined,
+      address: supplierAddress || undefined,
+      notes: supplierNotes || undefined,
+      category: "Supplier",
+      isActive: true,
+    },
+    { upsert: true, new: true, setDefaultsOnInsert: true },
+  );
 }
 
 // Parses our own export's "Colour breakdown" column, formatted as
@@ -147,10 +203,24 @@ function parseColorBreakdown(raw) {
 }
 
 const PRODUCT_TYPES = ["Lamp", "Wallet", "Pouch", "Decor", "Packaging"];
-const SALE_STATUSES = ["Delivered", "Packed", "Returned", "Damaged", "In progress"];
+const SALE_STATUSES = [
+  "Delivered",
+  "Packed",
+  "Returned",
+  "Damaged",
+  "In progress",
+];
 const NON_INVENTORY_KEYWORDS = [
-  "meta ads", "ad spend", "advertising", "packaging", "salary", "salaries",
-  "wages", "misc", "shipping", "freight",
+  "meta ads",
+  "ad spend",
+  "advertising",
+  "packaging",
+  "salary",
+  "salaries",
+  "wages",
+  "misc",
+  "shipping",
+  "freight",
 ];
 
 function guessProductType(rawType, name) {
@@ -181,12 +251,16 @@ function guessSaleStatus(raw) {
 const STILL_JUST_ORDERED = ["order", "ordered", "requested", "pending", ""];
 
 function guessPurchaseStatus(raw) {
-  const s = String(raw || "").trim().toLowerCase();
+  const s = String(raw || "")
+    .trim()
+    .toLowerCase();
   return STILL_JUST_ORDERED.includes(s) ? "Ordered" : "Delivered";
 }
 
 function guessPaidStatus(raw) {
-  const s = String(raw || "").trim().toLowerCase();
+  const s = String(raw || "")
+    .trim()
+    .toLowerCase();
   if (["paid", "y", "yes", "1", "true"].includes(s)) return "Paid";
   if (["unpaid", "n", "no", "0", "false"].includes(s)) return "Unpaid";
   return "COD";
@@ -221,7 +295,14 @@ export async function backfillDeliveryCosts(workbook) {
     throw err;
   }
 
-  const result = { matched: 0, updated: 0, unchanged: 0, notFound: 0, noChargeInSheet: 0, warnings: [] };
+  const result = {
+    matched: 0,
+    updated: 0,
+    unchanged: 0,
+    notFound: 0,
+    noChargeInSheet: 0,
+    warnings: [],
+  };
 
   for (const [i, row] of salesRows.entries()) {
     const orderId = String(row.order || "").trim() || `AUTO-${i + 2}`;
@@ -234,7 +315,9 @@ export async function backfillDeliveryCosts(workbook) {
     const sale = await Sale.findOne({ orderId });
     if (!sale) {
       result.notFound++;
-      result.warnings.push(`Row ${i + 2}: no existing sale matches Order ID "${orderId}" — skipped.`);
+      result.warnings.push(
+        `Row ${i + 2}: no existing sale matches Order ID "${orderId}" — skipped.`,
+      );
       continue;
     }
 
@@ -275,7 +358,14 @@ export async function backfillPurchaseStatuses(workbook) {
     throw err;
   }
 
-  const result = { matched: 0, updated: 0, unchanged: 0, notFound: 0, noOrderRefInSheet: 0, warnings: [] };
+  const result = {
+    matched: 0,
+    updated: 0,
+    unchanged: 0,
+    notFound: 0,
+    noOrderRefInSheet: 0,
+    warnings: [],
+  };
 
   for (const [i, row] of purchaseRows.entries()) {
     const orderRef = String(row.order || "").trim();
@@ -288,7 +378,9 @@ export async function backfillPurchaseStatuses(workbook) {
     const purchase = await Purchase.findOne({ orderRef });
     if (!purchase) {
       result.notFound++;
-      result.warnings.push(`Row ${i + 2}: no existing purchase matches Order "${orderRef}" — skipped.`);
+      result.warnings.push(
+        `Row ${i + 2}: no existing purchase matches Order "${orderRef}" — skipped.`,
+      );
       continue;
     }
 
@@ -331,7 +423,14 @@ export async function resyncStockFromInventorySheet(workbook) {
     throw err;
   }
 
-  const result = { matched: 0, updated: 0, unchanged: 0, notFound: 0, noStockInSheet: 0, warnings: [] };
+  const result = {
+    matched: 0,
+    updated: 0,
+    unchanged: 0,
+    notFound: 0,
+    noStockInSheet: 0,
+    warnings: [],
+  };
 
   for (const row of inventoryRows) {
     const name = String(row.name || "").trim();
@@ -346,7 +445,9 @@ export async function resyncStockFromInventorySheet(workbook) {
     // Escape regex metacharacters so a name like "Magsafe (2-pack)" doesn't
     // break the match.
     const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const product = await Product.findOne({ name: new RegExp(`^${escaped}$`, "i") });
+    const product = await Product.findOne({
+      name: new RegExp(`^${escaped}$`, "i"),
+    });
     if (!product) {
       result.notFound++;
       result.warnings.push(`"${name}": no matching product found — skipped.`);
@@ -400,14 +501,18 @@ export async function runExcelImport(workbook, { reset = false } = {}) {
   if (!salesRows) missing.push("Sales");
   if (missing.length) {
     const err = new Error(
-      `Workbook is missing required sheet(s): ${missing.join(", ")}. Expected sheets named "Inventory", "Purchase", and "Sales".`
+      `Workbook is missing required sheet(s): ${missing.join(", ")}. Expected sheets named "Inventory", "Purchase", and "Sales".`,
     );
     err.status = 400;
     throw err;
   }
 
   if (reset) {
-    await Promise.all([Product.deleteMany({}), Purchase.deleteMany({}), Sale.deleteMany({})]);
+    await Promise.all([
+      Product.deleteMany({}),
+      Purchase.deleteMany({}),
+      Sale.deleteMany({}),
+    ]);
   }
 
   // ── 1. Inventory sheet -> Product ──
@@ -422,7 +527,9 @@ export async function runExcelImport(workbook, { reset = false } = {}) {
 
     const key = name.toLowerCase();
     if (productByName.has(key)) {
-      warn(`Product "${name}" already exists — skipped duplicate Inventory row.`);
+      warn(
+        `Product "${name}" already exists — skipped duplicate Inventory row.`,
+      );
       continue;
     }
 
@@ -464,25 +571,37 @@ export async function runExcelImport(workbook, { reset = false } = {}) {
     // directly rather than re-guessing from the item name (which is what
     // the original business sheet, with no Category column, still needs).
     const explicitCategory = String(row.category || "").trim();
-    const category = explicitCategory || classifyPurchaseCategory(itemName, showInInventory);
-    const matchedProduct = category === "Inventory" ? productByName.get(itemName.toLowerCase()) : null;
+    const category =
+      explicitCategory || classifyPurchaseCategory(itemName, showInInventory);
+    const matchedProduct =
+      category === "Inventory"
+        ? productByName.get(itemName.toLowerCase())
+        : null;
 
     if (category === "Inventory" && !matchedProduct) {
-      warn(`Purchase row for "${itemName}" looks like inventory but no matching product was found — imported as an unlinked expense.`);
+      warn(
+        `Purchase row for "${itemName}" looks like inventory but no matching product was found — imported as an unlinked expense.`,
+      );
     }
 
     const quantity = toNumber(row.quantity, 0);
     const cost = toNumber(row.cost, 0);
 
     if (matchedProduct && quantity > 0 && cost > 0) {
-      const acc = costAccumulator.get(matchedProduct._id.toString()) || { totalCost: 0, totalQty: 0 };
+      const acc = costAccumulator.get(matchedProduct._id.toString()) || {
+        totalCost: 0,
+        totalQty: 0,
+      };
       acc.totalCost += cost;
       acc.totalQty += quantity;
       costAccumulator.set(matchedProduct._id.toString(), acc);
     }
 
     const tags = row.tags
-      ? String(row.tags).split(",").map((t) => t.trim()).filter(Boolean)
+      ? String(row.tags)
+          .split(",")
+          .map((t) => t.trim())
+          .filter(Boolean)
       : [];
 
     const doc = {
@@ -498,11 +617,13 @@ export async function runExcelImport(workbook, { reset = false } = {}) {
       category,
       supplier: String(row.pointOfContact || "").trim() || undefined,
       notes: String(row.notes || "").trim() || undefined,
-      weightCbm: String(row.weightcbm || row.weightCbm || "").trim() || undefined,
+      weightCbm:
+        String(row.weightcbm || row.weightCbm || "").trim() || undefined,
       tags,
     };
 
     try {
+      await syncSupplierContact(row);
       await Purchase.create(doc);
       stats.purchasesCreated++;
       if (matchedProduct) stats.purchasesLinkedToInventory++;
@@ -515,7 +636,9 @@ export async function runExcelImport(workbook, { reset = false } = {}) {
   for (const [productId, acc] of costAccumulator) {
     if (acc.totalQty <= 0) continue;
     const avgCost = acc.totalCost / acc.totalQty;
-    await Product.findByIdAndUpdate(productId, { costPrice: Math.round(avgCost * 100) / 100 });
+    await Product.findByIdAndUpdate(productId, {
+      costPrice: Math.round(avgCost * 100) / 100,
+    });
     stats.productsWithCostPriceUpdated++;
   }
 
@@ -529,7 +652,9 @@ export async function runExcelImport(workbook, { reset = false } = {}) {
 
     const matchedProduct = productByName.get(productName.toLowerCase());
     if (!matchedProduct) {
-      warn(`Sale row ${i + 2}: no product matches "${productName}" — row skipped.`);
+      warn(
+        `Sale row ${i + 2}: no product matches "${productName}" — row skipped.`,
+      );
       stats.salesSkippedNoProduct++;
       continue;
     }
@@ -575,14 +700,18 @@ export async function runExcelImport(workbook, { reset = false } = {}) {
       // product's retail price and creating a fake line total.
       const priceValue = String(row.price ?? "").trim();
       lineTotal = priceValue === "" ? 0 : toNumber(row.price, 0);
-      unitPrice = lineTotal === 0 ? 0 : Math.round((lineTotal / quantity) * 100) / 100;
+      unitPrice =
+        lineTotal === 0 ? 0 : Math.round((lineTotal / quantity) * 100) / 100;
     }
 
     let deliveryCost, deliveryFeeCharged;
     const extraNotes = [];
     if (row.notes) extraNotes.push(String(row.notes).trim());
 
-    if (row.deliveryCost !== undefined || row.deliveryFeeCharged !== undefined) {
+    if (
+      row.deliveryCost !== undefined ||
+      row.deliveryFeeCharged !== undefined
+    ) {
       // Our own export: already split into what the customer was charged
       // vs. what was actually paid to the courier. A blank cell means
       // "not recorded on this line" (e.g. every line after the first in a
@@ -597,7 +726,8 @@ export async function runExcelImport(workbook, { reset = false } = {}) {
       const deliveryCostParsed = toNumberOrNull(row.delivery);
       deliveryCost = deliveryCostParsed || 0;
       deliveryFeeCharged = null;
-      if (deliveryCostParsed === null && row.delivery) extraNotes.push(`Delivery: ${row.delivery}`);
+      if (deliveryCostParsed === null && row.delivery)
+        extraNotes.push(`Delivery: ${row.delivery}`);
     }
     if (deliveryCost > 0) stats.salesDeliveryChargesImported++;
     if (row.column12) extraNotes.push(`Extra: ${row.column12}`);
@@ -634,7 +764,9 @@ export async function runExcelImport(workbook, { reset = false } = {}) {
       // activity (via saleController/purchaseController) should move
       // stock from here on.
     } catch (err) {
-      warn(`Could not import sale row ${i + 2} (order ${orderId}): ${err.message}`);
+      warn(
+        `Could not import sale row ${i + 2} (order ${orderId}): ${err.message}`,
+      );
     }
   }
 
