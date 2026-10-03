@@ -1,97 +1,38 @@
+import mongoose from "mongoose";
 import Contact from "../models/Contact.js";
-import Purchase from "../models/Purchase.js";
 
 const normalizeName = (value) => String(value || "").trim();
 
+const isValidContactId = (value) => {
+  if (value === null || value === undefined) return false;
+  const raw = String(value).trim();
+  if (!raw || raw === "undefined" || raw === "null") return false;
+  return mongoose.Types.ObjectId.isValid(raw);
+};
+
+const readContactId = (req, res) => {
+  const rawId = req.params?.id;
+  if (!isValidContactId(rawId)) {
+    res.status(400).json({ message: "Contact ID is required." });
+    return null;
+  }
+
+  return rawId;
+};
+
 export const listContacts = async (req, res) => {
   try {
-    const supplierGroups = await Purchase.aggregate([
-      { $match: { supplier: { $exists: true, $ne: "" } } },
-      {
-        $group: {
-          _id: "$supplier",
-          totalPurchases: { $sum: 1 },
-          totalSpent: { $sum: { $ifNull: ["$cost", 0] } },
-          lastOrderDate: { $max: "$orderDate" },
-          pending: {
-            $sum: {
-              $cond: [{ $ne: ["$status", "Paid"] }, 1, 0],
-            },
-          },
-          paid: {
-            $sum: {
-              $cond: [{ $eq: ["$status", "Paid"] }, 1, 0],
-            },
-          },
-        },
-      },
-      {
-        $project: {
-          _id: 0,
-          name: "$_id",
-          totalPurchases: 1,
-          totalSpent: 1,
-          lastOrderDate: 1,
-          pending: 1,
-          paid: 1,
-        },
-      },
-      { $sort: { lastOrderDate: -1, totalSpent: -1 } },
-    ]);
-
-    const namedSuppliers = supplierGroups.map((group) => group.name);
-    const contacts = await Contact.find({
-      name: { $in: namedSuppliers.length ? namedSuppliers : ["__none__"] },
-    }).lean();
-
-    const contactByName = new Map(
-      contacts.map((contact) => [
-        String(contact.name).trim().toLowerCase(),
-        contact,
-      ]),
-    );
-
-    const merged = supplierGroups.map((group) => {
-      const contact = contactByName.get(
-        String(group.name).trim().toLowerCase(),
-      );
-      return {
-        ...contact,
-        _id: contact?._id || group._id,
-        name: group.name,
-        totalPurchases: group.totalPurchases || 0,
-        totalSpent: group.totalSpent || 0,
-        lastOrderDate: group.lastOrderDate || null,
-        pending: group.pending || 0,
-        paid: group.paid || 0,
-        company: contact?.company || "",
-        phone: contact?.phone || "",
-        email: contact?.email || "",
-        address: contact?.address || "",
-        notes: contact?.notes || "",
-        category: contact?.category || "Supplier",
-      };
-    });
-
-    const extraContacts = await Contact.find({
-      name: { $nin: namedSuppliers.length ? namedSuppliers : ["__none__"] },
-      isActive: { $ne: false },
-    })
+    // Contacts are intentionally manual-only. Expense and export sheet values
+    // must never be auto-materialized into the contact directory.
+    const contacts = await Contact.find({ isActive: { $ne: false } })
       .sort({ name: 1 })
       .lean();
 
-    const extraRows = extraContacts.map((contact) => ({
-      ...contact,
-      totalPurchases: 0,
-      totalSpent: 0,
-      lastOrderDate: null,
-      pending: 0,
-      paid: 0,
-    }));
-
-    res.json(
-      [...merged, ...extraRows].sort((a, b) => a.name.localeCompare(b.name)),
+    const safeContacts = contacts.filter(
+      (contact) => contact && isValidContactId(contact._id),
     );
+
+    res.json(safeContacts);
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
@@ -99,7 +40,10 @@ export const listContacts = async (req, res) => {
 
 export const getContact = async (req, res) => {
   try {
-    const contact = await Contact.findById(req.params.id);
+    const contactId = readContactId(req, res);
+    if (!contactId) return;
+
+    const contact = await Contact.findById(contactId);
     if (!contact) return res.status(404).json({ message: "Contact not found" });
     res.json(contact);
   } catch (err) {
@@ -136,7 +80,10 @@ export const createContact = async (req, res) => {
 
 export const updateContact = async (req, res) => {
   try {
-    const contact = await Contact.findById(req.params.id);
+    const contactId = readContactId(req, res);
+    if (!contactId) return;
+
+    const contact = await Contact.findById(contactId);
     if (!contact) return res.status(404).json({ message: "Contact not found" });
 
     const nextName = normalizeName(req.body.name || contact.name);
@@ -155,7 +102,7 @@ export const updateContact = async (req, res) => {
       category: req.body.category || contact.category,
     };
 
-    const updated = await Contact.findByIdAndUpdate(req.params.id, payload, {
+    const updated = await Contact.findByIdAndUpdate(contactId, payload, {
       new: true,
     });
     res.json(updated);
@@ -166,7 +113,10 @@ export const updateContact = async (req, res) => {
 
 export const deleteContact = async (req, res) => {
   try {
-    const contact = await Contact.findByIdAndDelete(req.params.id);
+    const contactId = readContactId(req, res);
+    if (!contactId) return;
+
+    const contact = await Contact.findByIdAndDelete(contactId);
     if (!contact) return res.status(404).json({ message: "Contact not found" });
     res.json({ message: "Contact deleted" });
   } catch (err) {

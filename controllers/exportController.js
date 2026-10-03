@@ -88,15 +88,15 @@ const PURCHASE_COLUMNS = [
   { header: "Notes", key: "notes", width: 30 },
 ];
 
-function purchaseRow(p, contact) {
+function purchaseRow(p) {
   return {
     productName: p.productName,
     color: p.color || "",
     category: p.category,
     supplier: p.supplier || "",
-    supplierPhone: contact?.phone || "",
-    supplierEmail: contact?.email || "",
-    supplierAddress: contact?.address || "",
+    supplierPhone: "",
+    supplierEmail: "",
+    supplierAddress: "",
     status: p.status,
     quantity: p.quantity || "",
     cost: money(p.cost),
@@ -131,6 +131,28 @@ function productRow(p) {
     lowStockAlert: p.lowStockAlert,
     colors: (p.colors || []).map((c) => `${c.name}: ${c.stock}`).join(", "),
     stockValue: money(p.currentStock * p.retailPrice),
+  };
+}
+
+const CONTACT_COLUMNS = [
+  { header: "Name", key: "name", width: 22 },
+  { header: "Category", key: "category", width: 14 },
+  { header: "Company", key: "company", width: 22 },
+  { header: "Phone", key: "phone", width: 16 },
+  { header: "Email", key: "email", width: 26 },
+  { header: "Address", key: "address", width: 28 },
+  { header: "Notes", key: "notes", width: 32 },
+];
+
+function contactRow(contact) {
+  return {
+    name: contact.name || "",
+    category: contact.category || "Supplier",
+    company: contact.company || "",
+    phone: contact.phone || "",
+    email: contact.email || "",
+    address: contact.address || "",
+    notes: contact.notes || "",
   };
 }
 
@@ -178,15 +200,6 @@ export const exportPurchases = async (req, res) => {
     const purchases = await Purchase.find(filter)
       .populate("product", "name sku")
       .sort({ orderDate: -1 });
-    const contacts = await Contact.find({
-      name: { $in: purchases.map((p) => p.supplier).filter(Boolean) },
-    }).lean();
-    const contactByName = new Map(
-      contacts.map((contact) => [
-        String(contact.name).trim().toLowerCase(),
-        contact,
-      ]),
-    );
 
     const workbook = new ExcelJS.Workbook();
     const sheet = workbook.addWorksheet("Expenses");
@@ -194,11 +207,7 @@ export const exportPurchases = async (req, res) => {
     sheet.getRow(1).font = { bold: true };
 
     purchases.forEach((p) => {
-      const key = String(p.supplier || "")
-        .trim()
-        .toLowerCase();
-      const contact = key ? contactByName.get(key) : null;
-      sheet.addRow(purchaseRow(p, contact));
+      sheet.addRow(purchaseRow(p));
     });
 
     res.setHeader(
@@ -410,17 +419,17 @@ export const exportProducts = async (req, res) => {
 };
 
 // GET /api/export/all?from=&to=
-// One workbook, three sheets — Sales, Expenses, Inventory — each using the
-// exact same columns as their standalone export, so this is never out of
-// sync with those. from/to scope Sales and Expenses (transaction history);
-// Inventory is always the current snapshot, same as its standalone export.
+// Workbook sheets — Sales, Expenses, Inventory, and Contacts — each using the
+// exact same columns as their standalone export, so this stays in sync.
+// from/to scope Sales and Expenses (transaction history); Inventory is the
+// current snapshot, and Contacts is the manual contact directory.
 export const exportAll = async (req, res) => {
   try {
     const { from, to } = req.query;
     const saleFilter = { ...dateRangeMatch("orderDate", from, to) };
     const purchaseFilter = { ...dateRangeMatch("orderDate", from, to) };
 
-    const [sales, purchases, products] = await Promise.all([
+    const [sales, purchases, products, contacts] = await Promise.all([
       Sale.find(saleFilter)
         .populate("product", "name sku")
         .sort({ orderDate: -1 }),
@@ -428,6 +437,7 @@ export const exportAll = async (req, res) => {
         .populate("product", "name sku")
         .sort({ orderDate: -1 }),
       Product.find({}).sort({ name: 1 }),
+      Contact.find({ isActive: { $ne: false } }).sort({ name: 1 }),
     ]);
 
     const workbook = new ExcelJS.Workbook();
@@ -447,6 +457,17 @@ export const exportAll = async (req, res) => {
     inventorySheet.getRow(1).font = { bold: true };
     products.forEach((p) => inventorySheet.addRow(productRow(p)));
 
+    const contactsSheet = workbook.addWorksheet("Suppliers & contacts");
+    contactsSheet.columns = CONTACT_COLUMNS;
+    contactsSheet.getRow(1).font = { bold: true };
+    contacts.forEach((contact) => contactsSheet.addRow(contactRow(contact)));
+
+    res.setHeader(
+      "Cache-Control",
+      "no-store, no-cache, must-revalidate, proxy-revalidate",
+    );
+    res.setHeader("Pragma", "no-cache");
+    res.setHeader("Expires", "0");
     res.setHeader(
       "Content-Type",
       "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",

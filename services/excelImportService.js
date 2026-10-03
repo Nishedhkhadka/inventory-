@@ -141,51 +141,11 @@ function truthy(value) {
   return ["true", "yes", "y", "1"].includes(s);
 }
 
-async function syncSupplierContact(row) {
-  const supplierName = String(row.supplier || row.pointOfContact || "").trim();
-  if (!supplierName) return;
-
-  const supplierPhone = String(
-    row.supplierPhone || row.supplierphone || "",
-  ).trim();
-  const supplierEmail = String(
-    row.supplierEmail || row.supplieremail || "",
-  ).trim();
-  const supplierAddress = String(
-    row.supplierAddress || row.supplieraddress || "",
-  ).trim();
-  const supplierCompany = String(
-    row.supplierCompany || row.suppliercompany || "",
-  ).trim();
-  const supplierNotes = String(
-    row.supplierNotes || row.suppliernotes || "",
-  ).trim();
-
-  if (
-    !supplierPhone &&
-    !supplierEmail &&
-    !supplierAddress &&
-    !supplierCompany &&
-    !supplierNotes
-  ) {
-    return;
-  }
-
-  await Contact.findOneAndUpdate(
-    { name: supplierName },
-    {
-      name: supplierName,
-      company: supplierCompany || undefined,
-      phone: supplierPhone || undefined,
-      email: supplierEmail || undefined,
-      address: supplierAddress || undefined,
-      notes: supplierNotes || undefined,
-      category: "Supplier",
-      isActive: true,
-    },
-    { upsert: true, new: true, setDefaultsOnInsert: true },
-  );
-}
+// Manual-first rule: imported sheet data should only write into the
+// supplier/contact directory when the workbook includes an explicit
+// Contacts sheet. Purchase and Sales rows are never allowed to synthesize
+// contact records on their own, since mixed supplier data from historical
+// sheets is not reliable as a source of truth.
 
 // Parses our own export's "Colour breakdown" column, formatted as
 // "Red: 5, Blue: 3" (see exportController.js productRow) — the inverse of
@@ -487,6 +447,9 @@ export async function runExcelImport(workbook, { reset = false } = {}) {
     salesDeliveryChargesImported: 0,
     duplicateOrderIdsRenamed: 0,
     productsWithCostPriceUpdated: 0,
+    contactsCreated: 0,
+    contactsUpdated: 0,
+    contactsSkipped: 0,
     warnings: [],
   };
   const warn = (msg) => stats.warnings.push(msg);
@@ -494,6 +457,12 @@ export async function runExcelImport(workbook, { reset = false } = {}) {
   const inventoryRows = sheetRows(workbook, ["Inventory", "Products"]);
   const purchaseRows = sheetRows(workbook, ["Purchase", "Expenses"]);
   const salesRows = sheetRows(workbook, "Sales");
+  const contactRows = sheetRows(workbook, [
+    "Suppliers & contacts",
+    "Contacts",
+    "Suppliers",
+    "Contacts & suppliers",
+  ]);
 
   const missing = [];
   if (!inventoryRows) missing.push("Inventory");
@@ -512,7 +481,71 @@ export async function runExcelImport(workbook, { reset = false } = {}) {
       Product.deleteMany({}),
       Purchase.deleteMany({}),
       Sale.deleteMany({}),
+      Contact.deleteMany({}),
     ]);
+  }
+
+  // ── 0. Optional Contacts sheet -> Contact ──
+  if (contactRows) {
+    for (const row of contactRows) {
+      const name = String(row.name || row.contact || row.supplier || "").trim();
+      if (!name) continue;
+
+      const categoryValue = String(row.category || "Supplier").trim();
+      const category = ["Supplier", "Customer", "Both", "Other"].includes(
+        categoryValue,
+      )
+        ? categoryValue
+        : "Supplier";
+
+      const payload = {
+        name,
+        company: String(row.company || row.companyname || "").trim() || "",
+        phone: String(row.phone || "").trim() || "",
+        email: String(row.email || "").trim() || "",
+        address: String(row.address || "").trim() || "",
+        notes: String(row.notes || "").trim() || "",
+        category,
+        isActive: true,
+      };
+
+      try {
+        const existing = await Contact.findOne({ name });
+        if (existing) {
+          const changed =
+            JSON.stringify({
+              company: existing.company || "",
+              phone: existing.phone || "",
+              email: existing.email || "",
+              address: existing.address || "",
+              notes: existing.notes || "",
+              category: existing.category || "Supplier",
+            }) !==
+            JSON.stringify({
+              company: payload.company,
+              phone: payload.phone,
+              email: payload.email,
+              address: payload.address,
+              notes: payload.notes,
+              category: payload.category,
+            });
+
+          if (!changed) {
+            continue;
+          }
+
+          await Contact.findByIdAndUpdate(existing._id, payload, { new: true });
+          stats.contactsUpdated++;
+          continue;
+        }
+
+        await Contact.create(payload);
+        stats.contactsCreated++;
+      } catch (err) {
+        warn(`Could not import contact "${name}": ${err.message}`);
+        stats.contactsSkipped++;
+      }
+    }
   }
 
   // ── 1. Inventory sheet -> Product ──
@@ -623,7 +656,6 @@ export async function runExcelImport(workbook, { reset = false } = {}) {
     };
 
     try {
-      await syncSupplierContact(row);
       await Purchase.create(doc);
       stats.purchasesCreated++;
       if (matchedProduct) stats.purchasesLinkedToInventory++;

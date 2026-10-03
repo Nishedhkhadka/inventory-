@@ -1,6 +1,5 @@
 import Purchase from "../models/Purchase.js";
 import Product from "../models/Product.js";
-import Contact from "../models/Contact.js";
 import {
   reconcileStockForPurchase,
   reconcileCostPriceForPurchase,
@@ -171,7 +170,9 @@ export const deletePurchaseCategory = async (req, res) => {
   }
 };
 
-// GET /api/purchases/suppliers — directory of supplier names and summary metrics.
+// GET /api/purchases/suppliers — supplier names and summary metrics only.
+// Supplier/contact data is intentionally manual-only, so we never hydrate this
+// list from the Contact directory or from imported/exported sheet values.
 export const getPurchaseSuppliers = async (req, res) => {
   try {
     const suppliers = await Purchase.aggregate([
@@ -203,40 +204,18 @@ export const getPurchaseSuppliers = async (req, res) => {
           lastOrderDate: 1,
           pending: 1,
           paid: 1,
+          company: "",
+          phone: "",
+          email: "",
+          address: "",
+          notes: "",
+          category: "Supplier",
         },
       },
       { $sort: { lastOrderDate: -1, totalSpent: -1 } },
     ]);
 
-    const contactNames = suppliers
-      .map((supplier) => supplier.name)
-      .filter(Boolean);
-    const contacts = await Contact.find({
-      name: { $in: contactNames.length ? contactNames : ["__none__"] },
-    }).lean();
-    const contactByName = new Map(
-      contacts.map((contact) => [
-        String(contact.name).trim().toLowerCase(),
-        contact,
-      ]),
-    );
-
-    const enrichedSuppliers = suppliers.map((supplier) => {
-      const match = contactByName.get(
-        String(supplier.name).trim().toLowerCase(),
-      );
-      return {
-        ...supplier,
-        company: match?.company || "",
-        phone: match?.phone || "",
-        email: match?.email || "",
-        address: match?.address || "",
-        notes: match?.notes || "",
-        category: match?.category || "Supplier",
-      };
-    });
-
-    res.json(enrichedSuppliers);
+    res.json(suppliers);
   } catch (err) {
     res.status(500).json({ message: err.message });
   }

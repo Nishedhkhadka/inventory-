@@ -28,6 +28,11 @@ const saleSchema = new mongoose.Schema(
       enum: ["In progress", "Packed", "Delivered", "Returned", "Damaged"],
       default: "In progress",
     },
+    billNo: {
+      type: String,
+      trim: true,
+      default: null,
+    },
     orderDate: {
       type: Date,
       default: Date.now,
@@ -131,7 +136,7 @@ const saleSchema = new mongoose.Schema(
       default: null,
     },
   },
-  { timestamps: true }
+  { timestamps: true },
 );
 
 // discount is always derived, never entered directly — keeps it correct
