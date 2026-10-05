@@ -3,65 +3,6 @@ import Product from "../models/Product.js";
 import { reconcileStockForSale } from "./inventoryService.js";
 
 /*
- * Nepal fiscal year.
- *
- * Example:
- * July 2026 - June 2027 = 2083/84
- */
-const getFiscalYear = (date = new Date()) => {
-  const d = new Date(date);
-
-  const adYear = d.getFullYear();
-  const month = d.getMonth() + 1;
-
-  const bsYear = adYear + 57;
-
-  if (month >= 7) {
-    return `${bsYear}/${String(bsYear + 1).slice(-2)}`;
-  }
-
-  return `${bsYear - 1}/${String(bsYear).slice(-2)}`;
-};
-
-/*
- * Generate the next bill number atomically.
- *
- * Example:
- * INV-2083/84-0001
- * INV-2083/84-0002
- */
-const generateBillNo = async (date) => {
-  const fiscalYear = getFiscalYear(date);
-
-  const counter = await Counter.findOneAndUpdate(
-    {
-      key: `bill-${fiscalYear}`,
-    },
-    {
-      $inc: {
-        seq: 1,
-      },
-    },
-    {
-      new: true,
-      upsert: true,
-      setDefaultsOnInsert: true,
-    }
-  );
-
-  return `INV-${fiscalYear}-${String(counter.seq).padStart(4, "0")}`;
-};
-
-/*
- * Convert frontend billIssued values safely.
- */
-const isTrue = (value) =>
-  value === true ||
-  value === "true" ||
-  value === 1 ||
-  value === "1";
-
-/*
  * GET /api/sales
  */
 export const getSales = async (req, res) => {
@@ -191,6 +132,9 @@ export const getSale = async (req, res) => {
 
 /*
  * POST /api/sales
+ *
+ * Bill numbers are completely manual.
+ * The frontend may provide billNo, or leave it empty.
  */
 export const createSale = async (req, res) => {
   try {
@@ -204,39 +148,28 @@ export const createSale = async (req, res) => {
       });
     }
 
-    const wantsBill = isTrue(req.body.billIssued);
-
-    /*
-     * Never accept a bill number from the frontend.
-     * The server generates it.
-     */
     const data = {
       ...req.body,
 
-      billIssued: false,
-      billNo: null,
-      billIssuedAt: null,
+      /*
+       * billNo is intentionally taken directly
+       * from the frontend.
+       *
+       * No automatic bill number generation.
+       */
+      billNo:
+        req.body.billNo === undefined ||
+        req.body.billNo === null ||
+        String(req.body.billNo).trim() === ""
+          ? null
+          : String(req.body.billNo).trim(),
     };
-
-    delete data.billNo;
-
-    /*
-     * Only generate a bill when explicitly requested.
-     */
-    if (wantsBill) {
-      data.billNo = await generateBillNo(
-        data.orderDate
-      );
-
-      data.billIssued = true;
-      data.billIssuedAt = new Date();
-    }
-
-    const sale = await Sale.create(data);
 
     /*
      * Existing stock behavior.
      */
+    const sale = await Sale.create(data);
+
     await reconcileStockForSale({
       productId: sale.product,
       oldStatus: null,
@@ -262,6 +195,9 @@ export const createSale = async (req, res) => {
 
 /*
  * PUT /api/sales/:id
+ *
+ * Bill numbers are completely manual.
+ * The frontend can add, change, or remove billNo.
  */
 export const updateSale = async (req, res) => {
   try {
@@ -282,84 +218,43 @@ export const updateSale = async (req, res) => {
       existing.product.toString();
 
     /*
-     * A bill is considered issued if either field exists.
-     * This also supports old records created before billIssued
-     * was added.
-     */
-    const alreadyHasBill =
-      Boolean(existing.billNo) ||
-      existing.billIssued === true;
-
-    const requestedBillIssued =
-      isTrue(req.body.billIssued);
-
-    /*
-     * IMPORTANT:
-     * Do not let the frontend overwrite billNo or billIssued
-     * through Object.assign().
+     * Apply all editable fields directly,
+     * including the manually entered billNo.
      */
     const updateData = {
       ...req.body,
     };
 
-    delete updateData.billNo;
+    /*
+     * Normalize an empty bill number to null.
+     *
+     * This allows the user to:
+     * - enter a bill number
+     * - change a bill number
+     * - completely remove a bill number
+     */
+    if (
+      updateData.billNo === undefined ||
+      updateData.billNo === null ||
+      String(updateData.billNo).trim() === ""
+    ) {
+      updateData.billNo = null;
+    } else {
+      updateData.billNo =
+        String(updateData.billNo).trim();
+    }
+
+    /*
+     * Old bill-related fields are no longer used
+     * by the application.
+     *
+     * Remove them from the update if they are still
+     * accidentally sent by an older frontend.
+     */
     delete updateData.billIssued;
     delete updateData.billIssuedAt;
 
-    /*
-     * Apply all normal editable fields.
-     */
     Object.assign(existing, updateData);
-
-    /*
-     * BILL LOGIC
-     */
-
-    if (alreadyHasBill) {
-      /*
-       * Once a bill exists, it is permanent.
-       * We keep the original bill number.
-       */
-      existing.billIssued = true;
-
-      /*
-       * If an old record has billIssued=false but has a billNo,
-       * normalize it.
-       */
-      if (!existing.billNo) {
-        return res.status(400).json({
-          message:
-            "This order is marked as billed but has no bill number.",
-        });
-      }
-
-      /*
-       * Never allow turning an issued bill back to No.
-       */
-    } else if (requestedBillIssued) {
-      /*
-       * This is the important transition:
-       *
-       * No bill
-       *     ↓
-       * Yes
-       *
-       * Generate the bill number now.
-       */
-      existing.billNo = await generateBillNo(
-        existing.orderDate
-      );
-
-      existing.billIssued = true;
-      existing.billIssuedAt = new Date();
-    } else {
-      /*
-       * Still no bill.
-       */
-      existing.billIssued = false;
-      existing.billNo = null;
-      existing.billIssuedAt = null;
-    }
 
     await existing.save();
 
@@ -419,6 +314,8 @@ export const updateSale = async (req, res) => {
 
 /*
  * DELETE /api/sales/:id
+ *
+ * Bill numbers are manual and do not prevent deletion.
  */
 export const deleteSale = async (req, res) => {
   try {
@@ -433,17 +330,10 @@ export const deleteSale = async (req, res) => {
     }
 
     /*
-     * Never delete a sale after a bill has been issued.
-     *
-     * The bill number must not be reused.
+     * No bill-related deletion restriction.
+     * A sale can be deleted regardless of whether
+     * a manual bill number exists.
      */
-    if (sale.billIssued || sale.billNo) {
-      return res.status(400).json({
-        message:
-          "This order has an issued bill and cannot be deleted. Mark it as Returned or Cancelled instead.",
-      });
-    }
-
     await reconcileStockForSale({
       productId: sale.product,
       oldStatus: sale.status,
