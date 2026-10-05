@@ -1,7 +1,6 @@
 import Sale from "../models/Sale.js";
 import Product from "../models/Product.js";
 import { reconcileStockForSale } from "./inventoryService.js";
-import Counter from "../models/Counter.js";
 
 /*
  * Nepal fiscal year.
@@ -25,7 +24,7 @@ const getFiscalYear = (date = new Date()) => {
 };
 
 /*
- * Generate the next bill number for a Nepal fiscal year.
+ * Generate the next bill number atomically.
  *
  * Example:
  * INV-2083/84-0001
@@ -34,9 +33,6 @@ const getFiscalYear = (date = new Date()) => {
 const generateBillNo = async (date) => {
   const fiscalYear = getFiscalYear(date);
 
-  /*
-   * Atomically increment the counter.
-   */
   const counter = await Counter.findOneAndUpdate(
     {
       key: `bill-${fiscalYear}`,
@@ -53,100 +49,9 @@ const generateBillNo = async (date) => {
     }
   );
 
-  let sequence = counter.seq;
-
-  /*
-   * Extra protection:
-   *
-   * If the Counter was reset/deleted while bills already exist,
-   * make sure we don't generate a duplicate bill number.
-   */
-  while (
-    await Sale.exists({
-      billNo: `INV-${fiscalYear}-${String(sequence).padStart(4, "0")}`,
-    })
-  ) {
-    sequence += 1;
-
-    await Counter.findOneAndUpdate(
-      {
-        key: `bill-${fiscalYear}`,
-      },
-      {
-        $max: {
-          seq: sequence,
-        },
-      },
-      {
-        upsert: true,
-      }
-    );
-  }
-
-  return `INV-${fiscalYear}-${String(sequence).padStart(4, "0")}`;
-}; 
-/*
- * Validate a manually entered bill number.
- *
- * Bill numbers must look like:
- *
- * INV-2083/84-0001
- */
-const validateBillNo = async ({
-  billNo,
-  orderDate,
-  saleId = null,
-}) => {
-  if (!billNo) {
-    throw new Error("Bill number is required.");
-  }
-
-  const normalized = String(billNo).trim().toUpperCase();
-
-  const fiscalYear = getFiscalYear(orderDate);
-
-  /*
-   * Expected format:
-   * INV-2083/84-0001
-   */
-  const pattern = new RegExp(
-    `^INV-${fiscalYear.replace("/", "\\/")}-\\d{4}$`
-  );
-
-  if (!pattern.test(normalized)) {
-    throw new Error(
-      `Invalid bill number. Expected format: INV-${fiscalYear}-0001`
-    );
-  }
-
-  /*
-   * Check duplicate bill number.
-   */
-  const duplicateFilter = {
-    billNo: normalized,
-  };
-
-  /*
-   * When editing an existing sale, exclude itself.
-   */
-  if (saleId) {
-    duplicateFilter._id = {
-      $ne: saleId,
-    };
-  }
-
-  const duplicate = await Sale.exists(
-    duplicateFilter
-  );
-
-  if (duplicate) {
-    throw new Error(
-      `Bill number ${normalized} is already used.`
-    );
-  }
-
-  return normalized;
+  return `INV-${fiscalYear}-${String(counter.seq).padStart(4, "0")}`;
 };
+
 /*
  * Convert frontend billIssued values safely.
  */
@@ -299,40 +204,29 @@ export const createSale = async (req, res) => {
       });
     }
 
-    const wantsBill = isTrue(
-      req.body.billIssued
-    );
+    const wantsBill = isTrue(req.body.billIssued);
 
+    /*
+     * Never accept a bill number from the frontend.
+     * The server generates it.
+     */
     const data = {
       ...req.body,
+
       billIssued: false,
       billNo: null,
       billIssuedAt: null,
     };
 
-    /*
-     * Never blindly trust the frontend bill number.
-     */
     delete data.billNo;
-    delete data.billIssuedAt;
 
+    /*
+     * Only generate a bill when explicitly requested.
+     */
     if (wantsBill) {
-      /*
-       * If frontend supplied a bill number,
-       * validate it.
-       *
-       * Otherwise generate one.
-       */
-      if (req.body.billNo) {
-        data.billNo = await validateBillNo({
-          billNo: req.body.billNo,
-          orderDate: data.orderDate,
-        });
-      } else {
-        data.billNo = await generateBillNo(
-          data.orderDate
-        );
-      }
+      data.billNo = await generateBillNo(
+        data.orderDate
+      );
 
       data.billIssued = true;
       data.billIssuedAt = new Date();
@@ -340,6 +234,9 @@ export const createSale = async (req, res) => {
 
     const sale = await Sale.create(data);
 
+    /*
+     * Existing stock behavior.
+     */
     await reconcileStockForSale({
       productId: sale.product,
       oldStatus: null,
@@ -356,16 +253,6 @@ export const createSale = async (req, res) => {
     res.status(201).json(populated);
   } catch (err) {
     console.error("createSale error:", err);
-
-    /*
-     * Mongo duplicate-key protection.
-     */
-    if (err.code === 11000) {
-      return res.status(400).json({
-        message:
-          "This bill number is already in use.",
-      });
-    }
 
     res.status(400).json({
       message: err.message,
@@ -391,10 +278,14 @@ export const updateSale = async (req, res) => {
     const oldStatus = existing.status;
     const oldQuantity = existing.quantity;
     const oldColor = existing.color || null;
-
     const oldProductId =
       existing.product.toString();
 
+    /*
+     * A bill is considered issued if either field exists.
+     * This also supports old records created before billIssued
+     * was added.
+     */
     const alreadyHasBill =
       Boolean(existing.billNo) ||
       existing.billIssued === true;
@@ -402,19 +293,21 @@ export const updateSale = async (req, res) => {
     const requestedBillIssued =
       isTrue(req.body.billIssued);
 
+    /*
+     * IMPORTANT:
+     * Do not let the frontend overwrite billNo or billIssued
+     * through Object.assign().
+     */
     const updateData = {
       ...req.body,
     };
 
-    /*
-     * Handle bill fields separately.
-     */
     delete updateData.billNo;
     delete updateData.billIssued;
     delete updateData.billIssuedAt;
 
     /*
-     * Apply normal editable fields first.
+     * Apply all normal editable fields.
      */
     Object.assign(existing, updateData);
 
@@ -424,27 +317,14 @@ export const updateSale = async (req, res) => {
 
     if (alreadyHasBill) {
       /*
-       * Existing bill stays issued.
+       * Once a bill exists, it is permanent.
+       * We keep the original bill number.
        */
       existing.billIssued = true;
 
       /*
-       * If the user supplied a NEW bill number,
-       * validate and allow editing.
-       */
-      if (
-        req.body.billNo &&
-        req.body.billNo !== existing.billNo
-      ) {
-        existing.billNo = await validateBillNo({
-          billNo: req.body.billNo,
-          orderDate: existing.orderDate,
-          saleId: existing._id,
-        });
-      }
-
-      /*
-       * Safety check for corrupted old records.
+       * If an old record has billIssued=false but has a billNo,
+       * normalize it.
        */
       if (!existing.billNo) {
         return res.status(400).json({
@@ -452,24 +332,23 @@ export const updateSale = async (req, res) => {
             "This order is marked as billed but has no bill number.",
         });
       }
+
+      /*
+       * Never allow turning an issued bill back to No.
+       */
     } else if (requestedBillIssued) {
       /*
-       * First time issuing a bill.
+       * This is the important transition:
        *
-       * Use the manually entered number if provided.
-       * Otherwise generate one automatically.
+       * No bill
+       *     ↓
+       * Yes
+       *
+       * Generate the bill number now.
        */
-      if (req.body.billNo) {
-        existing.billNo = await validateBillNo({
-          billNo: req.body.billNo,
-          orderDate: existing.orderDate,
-          saleId: existing._id,
-        });
-      } else {
-        existing.billNo = await generateBillNo(
-          existing.orderDate
-        );
-      }
+      existing.billNo = await generateBillNo(
+        existing.orderDate
+      );
 
       existing.billIssued = true;
       existing.billIssuedAt = new Date();
@@ -531,13 +410,6 @@ export const updateSale = async (req, res) => {
     res.json(populated);
   } catch (err) {
     console.error("updateSale error:", err);
-
-    if (err.code === 11000) {
-      return res.status(400).json({
-        message:
-          "This bill number is already in use.",
-      });
-    }
 
     res.status(400).json({
       message: err.message,
