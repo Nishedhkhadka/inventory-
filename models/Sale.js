@@ -153,6 +153,17 @@ saleSchema.pre("save", function (next) {
 
 saleSchema.index({ status: 1 });
 saleSchema.index({ orderDate: -1 });
-saleSchema.index({ billNo: 1 });
+
+saleSchema.index(
+  { billNo: 1 },
+  {
+    unique: true,
+    partialFilterExpression: {
+      billNo: {
+        $type: "string",
+      },
+    },
+  }
+);
 
 export default mongoose.model("Sale", saleSchema);
