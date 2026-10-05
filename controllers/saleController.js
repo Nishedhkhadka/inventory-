@@ -1,6 +1,5 @@
 import Sale from "../models/Sale.js";
 import Product from "../models/Product.js";
-import Counter from "../models/Counter.js";
 import { reconcileStockForSale } from "./inventoryService.js";
 
 /*
