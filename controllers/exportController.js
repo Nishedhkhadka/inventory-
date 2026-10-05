@@ -24,6 +24,7 @@ const money = (n) => Number(n || 0);
 // export-everything workbook, so the two never drift apart.
 const SALES_COLUMNS = [
   { header: "Order", key: "orderId", width: 16 },
+  { header: "Bill No", key: "billNo", width: 16 },
   { header: "Product", key: "product", width: 24 },
   { header: "Colour", key: "color", width: 12 },
   { header: "Status", key: "status", width: 14 },
@@ -49,7 +50,8 @@ function salesRow(s) {
   const feeKnown =
     s.deliveryFeeCharged !== null && s.deliveryFeeCharged !== undefined;
   return {
-    orderId: s.orderId,
+    orderId: s.orderId || "",
+    billNo: s.billNo  || "",
     product: s.product?.name || "—",
     color: s.color || "",
     status: s.status,

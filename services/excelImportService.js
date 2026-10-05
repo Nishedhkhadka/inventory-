@@ -69,6 +69,8 @@ const ALIASES = {
   deliverycostcourier: "deliveryCost",
   customer: "pointOfContact",
   phone: "customerPhone",
+  billno: "billNo",
+billnumber: "billNo",
   payment: "paid",
   item: "product",
   category: "category",
@@ -181,6 +183,9 @@ const NON_INVENTORY_KEYWORDS = [
   "misc",
   "shipping",
   "freight",
+  "courier",
+  "delivery",
+  "videography"
 ];
 
 function guessProductType(rawType, name) {
@@ -767,6 +772,7 @@ export async function runExcelImport(workbook, { reset = false } = {}) {
     const doc = {
       orderId,
       product: matchedProduct._id,
+     billNo: String(row.billNo || "").trim() || undefined,
       color: String(row.color || "").trim() || undefined,
       status,
       orderDate: toDate(row.orderDate) || new Date(),
