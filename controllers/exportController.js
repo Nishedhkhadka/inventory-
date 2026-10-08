@@ -142,7 +142,7 @@ const CONTACT_COLUMNS = [
   { header: "Company", key: "company", width: 22 },
   { header: "Phone", key: "phone", width: 16 },
   { header: "Email", key: "email", width: 26 },
-  { header: "Address", key: "address", width: 28 },
+  { header: "Address", key: "address", width: 28 }, 
   { header: "Notes", key: "notes", width: 32 },
 ];
 
@@ -158,7 +158,7 @@ function contactRow(contact) {
   };
 }
 
-// GET /api/sales/export?from=&to=&status=
+// GET /api/sales/export?from=&to=&status =
 export const exportSales = async (req, res) => {
   try {
     const { from, to, status } = req.query;
