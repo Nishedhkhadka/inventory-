@@ -1,8 +1,5 @@
 import mongoose from "mongoose";
 
-// A colour variant of a product. When a product has one or more of these,
-// stock is tracked per-colour and currentStock is kept as their sum.
-// Products with no variants just use currentStock directly.
 const colorVariantSchema = new mongoose.Schema(
   {
     name: { type: String, required: true, trim: true },
@@ -11,7 +8,6 @@ const colorVariantSchema = new mongoose.Schema(
   { _id: false },
 );
 
-// Stock allocation per location and per color variant
 const locationStockSchema = new mongoose.Schema(
   {
     location: {
@@ -43,7 +39,7 @@ const productSchema = new mongoose.Schema(
     sku: {
       type: String,
       unique: true,
-      sparse: true, // allows multiple docs with no sku while still enforcing uniqueness when present
+      sparse: true,
       trim: true,
       uppercase: true,
     },
@@ -57,8 +53,6 @@ const productSchema = new mongoose.Schema(
       required: [true, "Retail price is required"],
       min: 0,
     },
-    // Average landed/procurement cost per unit — drives the P&L's cost of
-    // goods sold. Optional; defaults to 0 until purchases fill it in.
     costPrice: {
       type: Number,
       default: 0,
@@ -90,9 +84,6 @@ productSchema.virtual("isLowStock").get(function () {
   return this.currentStock <= this.lowStockAlert;
 });
 
-// Keep currentStock in sync with the colour breakdown whenever a product
-// that tracks colours is saved directly (bulk $inc updates bypass this and
-// touch currentStock/colors.$.stock together instead — see inventoryService).
 productSchema.pre("save", function (next) {
   if (this.colors && this.colors.length > 0) {
     this.currentStock = this.colors.reduce((sum, c) => sum + (c.stock || 0), 0);

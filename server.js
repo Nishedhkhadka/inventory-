@@ -17,6 +17,11 @@ import exportRoutes from "./routes/export.js";
 import contactRoutes from "./routes/contacts.js";
 import authRoutes from "./routes/auth.js";
 import { protect } from "./middleware/auth.js";
+import locationRoutes from "./routes/locations.js";
+import transferRoutes from "./routes/transfers.js";
+
+app.use("/api/locations", locationRoutes);
+app.use("/api/transfers", transferRoutes);
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 

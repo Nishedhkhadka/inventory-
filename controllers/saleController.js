@@ -83,8 +83,9 @@ export const getSales = async (req, res) => {
       Sale.find(filter)
         .populate(
           "product",
-          "name sku type retailPrice currentStock colors"
+          "name sku type retailPrice currentStock colors locationStocks"
         )
+        .populate("location", "name isDefault")
         .sort({
           orderDate: -1,
         })
@@ -112,9 +113,9 @@ export const getSales = async (req, res) => {
  */
 export const getSale = async (req, res) => {
   try {
-    const sale = await Sale.findById(
-      req.params.id
-    ).populate("product");
+    const sale = await Sale.findById(req.params.id)
+      .populate("product")
+      .populate("location", "name isDefault");
 
     if (!sale) {
       return res.status(404).json({
@@ -173,14 +174,16 @@ export const createSale = async (req, res) => {
     await reconcileStockForSale({
       productId: sale.product,
       oldStatus: null,
+      oldLocationId: null,
       newStatus: sale.status,
       newQuantity: sale.quantity,
       newColor: sale.color || null,
+      newLocationId: sale.location || null,
     });
 
     const populated = await sale.populate(
       "product",
-      "name sku type retailPrice currentStock colors"
+      "name sku type retailPrice currentStock colors locationStocks"
     );
 
     res.status(201).json(populated);
@@ -214,8 +217,8 @@ export const updateSale = async (req, res) => {
     const oldStatus = existing.status;
     const oldQuantity = existing.quantity;
     const oldColor = existing.color || null;
-    const oldProductId =
-      existing.product.toString();
+    const oldLocationId = existing.location ? existing.location.toString() : null;
+    const oldProductId = existing.product.toString();
 
     /*
      * Apply all editable fields directly,
@@ -227,11 +230,6 @@ export const updateSale = async (req, res) => {
 
     /*
      * Normalize an empty bill number to null.
-     *
-     * This allows the user to:
-     * - enter a bill number
-     * - change a bill number
-     * - completely remove a bill number
      */
     if (
       updateData.billNo === undefined ||
@@ -247,9 +245,6 @@ export const updateSale = async (req, res) => {
     /*
      * Old bill-related fields are no longer used
      * by the application.
-     *
-     * Remove them from the update if they are still
-     * accidentally sent by an older frontend.
      */
     delete updateData.billIssued;
     delete updateData.billIssuedAt;
@@ -258,14 +253,12 @@ export const updateSale = async (req, res) => {
 
     await existing.save();
 
-    const newProductId =
-      existing.product.toString();
-
-    const newColor =
-      existing.color || null;
+    const newProductId = existing.product.toString();
+    const newColor = existing.color || null;
+    const newLocationId = existing.location ? existing.location.toString() : null;
 
     /*
-     * Existing stock reconciliation.
+     * Existing stock reconciliation with location tracking.
      */
     if (oldProductId !== newProductId) {
       await reconcileStockForSale({
@@ -273,6 +266,7 @@ export const updateSale = async (req, res) => {
         oldStatus,
         oldQuantity,
         oldColor,
+        oldLocationId,
         newStatus: null,
         newQuantity: 0,
       });
@@ -284,6 +278,7 @@ export const updateSale = async (req, res) => {
         newStatus: existing.status,
         newQuantity: existing.quantity,
         newColor,
+        newLocationId,
       });
     } else {
       await reconcileStockForSale({
@@ -291,15 +286,17 @@ export const updateSale = async (req, res) => {
         oldStatus,
         oldQuantity,
         oldColor,
+        oldLocationId,
         newStatus: existing.status,
         newQuantity: existing.quantity,
         newColor,
+        newLocationId,
       });
     }
 
     const populated = await existing.populate(
       "product",
-      "name sku type retailPrice currentStock colors"
+      "name sku type retailPrice currentStock colors locationStocks"
     );
 
     res.json(populated);
@@ -331,14 +328,14 @@ export const deleteSale = async (req, res) => {
 
     /*
      * No bill-related deletion restriction.
-     * A sale can be deleted regardless of whether
-     * a manual bill number exists.
+     * Restock location and color inventory upon deletion.
      */
     await reconcileStockForSale({
       productId: sale.product,
       oldStatus: sale.status,
       oldQuantity: sale.quantity,
       oldColor: sale.color || null,
+      oldLocationId: sale.location || null,
       newStatus: null,
       newQuantity: 0,
     });
