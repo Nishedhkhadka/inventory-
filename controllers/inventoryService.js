@@ -1,49 +1,145 @@
 import Product from "../models/Product.js";
+import Location from "../models/Location.js";
 
 /**
- * Applies a signed unit delta to a product's stock, and to the matching
- * colour variant's stock if a colour is given. This is the one place that
- * actually touches Product.currentStock / Product.colors[].stock, so both
- * the sale side and the purchase side of the ledger stay consistent.
+ * Backfills all products without location-specific inventory 
+ * so that their stock and colour variants reside in the default location.
+ */
+export async function initializeDefaultLocationStocks() {
+  try {
+    let defaultLoc = await Location.findOne({ isDefault: true });
+
+    // Seed default location if missing
+    if (!defaultLoc) {
+      defaultLoc = await Location.create({
+        name: "Main Warehouse",
+        isDefault: true,
+      });
+    }
+
+    const products = await Product.find({});
+
+    for (const product of products) {
+      let updated = false;
+
+      // 1. If product has colour variants, ensure each variant exists in locationStocks
+      if (product.colors && product.colors.length > 0) {
+        for (const colorObj of product.colors) {
+          const exists = (product.locationStocks || []).some(
+            (ls) =>
+              ls.location.toString() === defaultLoc._id.toString() &&
+              ls.color === colorObj.name
+          );
+
+          if (!exists) {
+            product.locationStocks.push({
+              location: defaultLoc._id,
+              color: colorObj.name,
+              stock: colorObj.stock || 0,
+            });
+            updated = true;
+          }
+        }
+      } else {
+        // 2. Uncoloured product fallback
+        const exists = (product.locationStocks || []).some(
+          (ls) =>
+            ls.location.toString() === defaultLoc._id.toString() &&
+            (!ls.color || ls.color === "")
+        );
+
+        if (!exists) {
+          product.locationStocks.push({
+            location: defaultLoc._id,
+            color: "",
+            stock: product.currentStock || 0,
+          });
+          updated = true;
+        }
+      }
+
+      if (updated) {
+        await product.save();
+      }
+    }
+  } catch (err) {
+    console.error("Error initializing default location stocks:", err);
+  }
+}
+
+/**
+ * Applies a signed unit delta to a product's stock, to the matching colour
+ * variant, and to the specified location's stock breakdown.
  *
  * @param {String} productId
  * @param {Number} delta - positive to add stock, negative to remove it
- * @param {String|null} color - colour variant name, or null for uncoloured products
+ * @param {String|null} color - colour variant name, or null/empty for uncoloured products
+ * @param {String|null} locationId - location ID to adjust stock for
  */
-async function applyStockDelta(productId, delta, color = null) {
+async function applyStockDelta(productId, delta, color = null, locationId = null) {
   if (!delta) return null;
 
-  if (color) {
-    // Bump the specific colour variant, then resync the aggregate
-    // currentStock field from the variant list in one round trip.
-    const updated = await Product.findOneAndUpdate(
-      { _id: productId, "colors.name": color },
-      { $inc: { "colors.$.stock": delta } },
-      { new: true }
-    );
-    if (updated) {
-      updated.currentStock = updated.colors.reduce((sum, c) => sum + (c.stock || 0), 0);
-      await updated.save();
-      return updated;
-    }
-    // Colour not found on the product (e.g. it was removed later) — fall
-    // through to a plain top-level adjustment so the delta isn't lost.
+  const colorName = color ? String(color).trim() : "";
+
+  // Get default location if no locationId is specified
+  let targetLocationId = locationId;
+  if (!targetLocationId) {
+    const defaultLoc = await Location.findOne({ isDefault: true });
+    if (defaultLoc) targetLocationId = defaultLoc._id;
   }
 
-  return Product.findByIdAndUpdate(productId, { $inc: { currentStock: delta } }, { new: true });
+  // 1. Bump colour variant aggregate stock
+  if (colorName) {
+    await Product.updateOne(
+      { _id: productId, "colors.name": colorName },
+      { $inc: { "colors.$.stock": delta } }
+    );
+  }
+
+  // 2. Bump overall product currentStock
+  await Product.updateOne({ _id: productId }, { $inc: { currentStock: delta } });
+
+  // 3. Bump per-location stock breakdown for this color variant
+  if (targetLocationId) {
+    const product = await Product.findById(productId);
+    if (product) {
+      const locMatch = (product.locationStocks || []).find(
+        (ls) =>
+          ls.location.toString() === targetLocationId.toString() &&
+          (ls.color || "") === colorName
+      );
+
+      if (locMatch) {
+        await Product.updateOne(
+          {
+            _id: productId,
+            "locationStocks.location": targetLocationId,
+            "locationStocks.color": colorName,
+          },
+          { $inc: { "locationStocks.$.stock": delta } }
+        );
+      } else {
+        await Product.updateOne(
+          { _id: productId },
+          {
+            $push: {
+              locationStocks: {
+                location: targetLocationId,
+                color: colorName,
+                stock: Math.max(0, delta),
+              },
+            },
+          }
+        );
+      }
+    }
+  }
+
+  return Product.findById(productId);
 }
 
 /**
  * Central rule for how a sale affects warehouse stock.
- * Stock is deducted the moment an order exists — the default 'In progress'
- * status already holds it reserved — and stays deducted all the way
- * through Packed, Delivered, and Damaged. 'Returned' is the only status
- * that releases it back to sellable stock. Because reconcileStockForSale
- * always applies the DIFFERENCE between the old and new status's effect,
- * a single before/after pair here (rather than a special case per status)
- * is enough to cover every transition: In progress -> Packed -> Delivered
- * moves -qty to -qty to -qty (net zero further change), while anything ->
- * Returned moves -qty to 0 (a +qty restock).
  */
 function saleStockEffect(status, quantity) {
   return status === "Returned" ? 0 : -quantity;
@@ -51,9 +147,6 @@ function saleStockEffect(status, quantity) {
 
 /**
  * Central rule for how a purchase affects warehouse stock.
- * Goods only physically land in the warehouse once a purchase is marked
- * 'Delivered'. 'Ordered' (still in transit / not yet received) and
- * non-inventory expense categories have no stock effect at all.
  */
 function purchaseStockEffect(status, quantity, hasProduct) {
   if (!hasProduct) return 0;
@@ -62,60 +155,48 @@ function purchaseStockEffect(status, quantity, hasProduct) {
 
 /**
  * Applies the stock delta between a sale's before/after state to its product.
- * Call this any time a sale is created, updated, or deleted so
- * Product.currentStock always reflects reality.
- *
- * @param {Object} params
- * @param {String} params.productId
- * @param {String|null} params.oldStatus - null when the sale is being created
- * @param {Number} params.oldQuantity - ignored when oldStatus is null
- * @param {String|null} params.oldColor
- * @param {String|null} params.newStatus - null when the sale is being deleted
- * @param {Number} params.newQuantity - ignored when newStatus is null
- * @param {String|null} params.newColor
  */
 export async function reconcileStockForSale({
   productId,
   oldStatus = null,
   oldQuantity = 0,
   oldColor = null,
+  oldLocationId = null,
   newStatus = null,
   newQuantity = 0,
   newColor = null,
+  newLocationId = null,
 }) {
   const before = oldStatus ? saleStockEffect(oldStatus, oldQuantity) : 0;
   const after = newStatus ? saleStockEffect(newStatus, newQuantity) : 0;
 
   if (before === 0 && after === 0) return null;
 
-  // If the colour changed, reverse the old colour's delta and apply the new
-  // colour's delta separately rather than net them against each other.
-  if (oldColor !== newColor) {
-    if (before !== 0) await applyStockDelta(productId, -before, oldColor);
-    if (after !== 0) await applyStockDelta(productId, after, newColor);
+  if (oldColor !== newColor || String(oldLocationId) !== String(newLocationId)) {
+    if (before !== 0) await applyStockDelta(productId, -before, oldColor, oldLocationId);
+    if (after !== 0) await applyStockDelta(productId, after, newColor, newLocationId);
     return null;
   }
 
   const delta = after - before;
   if (delta === 0) return null;
-  return applyStockDelta(productId, delta, newColor);
+  return applyStockDelta(productId, delta, newColor, newLocationId);
 }
 
 /**
- * Applies the stock delta between a purchase's before/after state to its
- * linked product. Mirrors reconcileStockForSale but the sign runs the other
- * way: a 'Delivered' inventory purchase adds units instead of removing them.
- * A no-op when the purchase has no linked product (i.e. it's a plain expense).
+ * Applies the stock delta between a purchase's before/after state to its linked product.
  */
 export async function reconcileStockForPurchase({
   productId,
   oldStatus = null,
   oldQuantity = 0,
   oldColor = null,
+  oldLocationId = null,
   oldHasProduct = false,
   newStatus = null,
   newQuantity = 0,
   newColor = null,
+  newLocationId = null,
   newHasProduct = false,
 }) {
   const before = oldStatus && oldHasProduct ? purchaseStockEffect(oldStatus, oldQuantity, true) : 0;
@@ -123,33 +204,19 @@ export async function reconcileStockForPurchase({
 
   if (before === 0 && after === 0) return null;
 
-  if (oldColor !== newColor) {
-    if (before !== 0) await applyStockDelta(productId, -before, oldColor);
-    if (after !== 0) await applyStockDelta(productId, after, newColor);
+  if (oldColor !== newColor || String(oldLocationId) !== String(newLocationId)) {
+    if (before !== 0) await applyStockDelta(productId, -before, oldColor, oldLocationId);
+    if (after !== 0) await applyStockDelta(productId, after, newColor, newLocationId);
     return null;
   }
 
   const delta = after - before;
   if (delta === 0) return null;
-  return applyStockDelta(productId, delta, newColor);
+  return applyStockDelta(productId, delta, newColor, newLocationId);
 }
 
 /**
- * Updates a product's weighted-average costPrice when a purchase newly
- * counts units as received (see purchaseStockEffect) — e.g. its status
- * moves to 'Delivered', or its quantity increases while already
- * Delivered. This is the live-app equivalent of the cost-averaging the
- * Excel import already does (see excelImportService.js) — without it,
- * costPrice only ever reflects whatever was true at import time.
- *
- * Never runs backwards: reducing a purchase's quantity or un-delivering
- * it leaves costPrice as-is, since a weighted average isn't cleanly
- * reversible. A no-op for non-inventory purchases or when no new units
- * are actually being added.
- *
- * IMPORTANT: call this BEFORE reconcileStockForPurchase changes the
- * product's currentStock — the weighted-average formula needs the stock
- * level as it stood before this purchase's units were added.
+ * Updates a product's weighted-average costPrice when a purchase newly counts units as received.
  */
 export async function reconcileCostPriceForPurchase({
   productId,
@@ -177,3 +244,5 @@ export async function reconcileCostPriceForPurchase({
   await Product.findByIdAndUpdate(productId, { costPrice: Math.round(newAvgCost * 100) / 100 });
   return newAvgCost;
 }
+
+export { applyStockDelta };

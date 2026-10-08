@@ -19,12 +19,16 @@ import authRoutes from "./routes/auth.js";
 import { protect } from "./middleware/auth.js";
 import locationRoutes from "./routes/locations.js";
 import transferRoutes from "./routes/transfers.js";
-
+import { initializeDefaultLocationStocks } from "./services/inventoryService.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 dotenv.config();
-connectDB();
+
+// Connect to Database & Run Initial Location Stock Backfill
+connectDB().then(async () => {
+  await initializeDefaultLocationStocks();
+});
 
 const app = express();
 
@@ -36,9 +40,6 @@ const allowedOrigins = [
     .map((origin) => origin.trim())
     .filter(Boolean),
 ];
-app.use(express.json());
-app.use("/api/locations", locationRoutes);
-app.use("/api/transfers", transferRoutes);
 
 app.use(
   cors({
@@ -84,6 +85,8 @@ app.use("/api/import", importRoutes);
 app.use("/api/packaging", packagingRoutes);
 app.use("/api/export", exportRoutes);
 app.use("/api/contacts", contactRoutes);
+app.use("/api/locations", locationRoutes);
+app.use("/api/transfers", transferRoutes);
 
 // 404 fallback
 app.use((req, res) => res.status(404).json({ message: "Route not found" }));
@@ -99,4 +102,4 @@ app.use((err, req, res, next) => {
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () =>
   console.log(`[server] Zeno API running on port ${PORT}`),
-);
+); 
