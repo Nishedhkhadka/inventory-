@@ -11,6 +11,28 @@ const colorVariantSchema = new mongoose.Schema(
   { _id: false },
 );
 
+// Stock allocation per location and per color variant
+const locationStockSchema = new mongoose.Schema(
+  {
+    location: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Location",
+      required: true,
+    },
+    color: {
+      type: String,
+      default: "",
+      trim: true,
+    },
+    stock: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+  },
+  { _id: false },
+);
+
 const productSchema = new mongoose.Schema(
   {
     name: {
@@ -54,6 +76,10 @@ const productSchema = new mongoose.Schema(
     },
     colors: {
       type: [colorVariantSchema],
+      default: [],
+    },
+    locationStocks: {
+      type: [locationStockSchema],
       default: [],
     },
   },
