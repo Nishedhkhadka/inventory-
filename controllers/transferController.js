@@ -1,5 +1,6 @@
 import Product from "../models/Product.js";
 import StockTransfer from "../models/StockTransfer.js";
+import Location from "../models/Location.js";
 import { applyStockDelta } from "../services/inventoryService.js";
 
 // POST /api/transfers
@@ -21,14 +22,30 @@ export const transferStock = async (req, res) => {
 
     const colorName = color ? String(color).trim() : "";
 
-    // Verify source location stock
+    // 1. Get default location ID to check if source is default location
+    const defaultLoc = await Location.findOne({ isDefault: true });
+    const isSourceDefault = defaultLoc && defaultLoc._id.toString() === fromLocationId.toString();
+
+    // 2. Find location-specific stock
     const sourceLoc = (product.locationStocks || []).find(
       (ls) =>
         ls.location.toString() === fromLocationId.toString() &&
         (ls.color || "") === colorName
     );
 
-    const availableStock = sourceLoc ? sourceLoc.stock : 0;
+    // 3. Fallback logic: If locationStock entry doesn't exist yet and source is default location, use global variant stock
+    let availableStock = 0;
+    if (sourceLoc) {
+      availableStock = sourceLoc.stock;
+    } else if (isSourceDefault || (product.locationStocks || []).length === 0) {
+      if (colorName) {
+        const colorVariant = (product.colors || []).find((c) => c.name === colorName);
+        availableStock = colorVariant ? colorVariant.stock : 0;
+      } else {
+        availableStock = product.currentStock || 0;
+      }
+    }
+
     if (availableStock < qty) {
       return res.status(400).json({
         message: `Insufficient stock at source location (${availableStock} available for ${colorName || "default"}).`,
