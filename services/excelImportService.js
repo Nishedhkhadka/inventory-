@@ -490,7 +490,7 @@ export async function runExcelImport(workbook, { reset = false } = {}) {
     ]);
   }
 
- // ── 0. Optional Contacts sheet -> Contact ──
+// ── 0. Optional Contacts sheet -> Contact ──
 if (contactRows) {
   for (const row of contactRows) {
     const name = String(row.name || row.contact || row.supplier || "").trim();
@@ -506,9 +506,10 @@ if (contactRows) {
     const payload = {
       name,
       company: String(row.company || row.companyname || row.supplierCompany || "").trim() || "",
-      phone: String(row.phone || row.supplierPhone || "").trim() || "", // <--- Add row.supplierPhone fallback here
-      email: String(row.email || row.supplierEmail || "").trim() || "",  // <--- Add row.supplierEmail fallback here
-      address: String(row.address || row.supplierAddress || "").trim() || "", // <--- Add row.supplierAddress fallback here
+      // ADD row.customerPhone fallback here because ALIASES renames 'phone' -> 'customerPhone'
+      phone: String(row.phone || row.customerPhone || row.supplierPhone || "").trim() || "",
+      email: String(row.email || row.supplierEmail || "").trim() || "",
+      address: String(row.address || row.supplierAddress || "").trim() || "",
       notes: String(row.notes || row.supplierNotes || "").trim() || "",
       category,
       isActive: true,
