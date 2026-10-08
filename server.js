@@ -36,6 +36,7 @@ const allowedOrigins = [
     .map((origin) => origin.trim())
     .filter(Boolean),
 ];
+app.use(express.json());
 app.use("/api/locations", locationRoutes);
 app.use("/api/transfers", transferRoutes);
 
