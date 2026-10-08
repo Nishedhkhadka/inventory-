@@ -490,29 +490,29 @@ export async function runExcelImport(workbook, { reset = false } = {}) {
     ]);
   }
 
-  // ── 0. Optional Contacts sheet -> Contact ──
-  if (contactRows) {
-    for (const row of contactRows) {
-      const name = String(row.name || row.contact || row.supplier || "").trim();
-      if (!name) continue;
+ // ── 0. Optional Contacts sheet -> Contact ──
+if (contactRows) {
+  for (const row of contactRows) {
+    const name = String(row.name || row.contact || row.supplier || "").trim();
+    if (!name) continue;
 
-      const categoryValue = String(row.category || "Supplier").trim();
-      const category = ["Supplier", "Customer", "Both", "Other"].includes(
-        categoryValue,
-      )
-        ? categoryValue
-        : "Supplier";
+    const categoryValue = String(row.category || "Supplier").trim();
+    const category = ["Supplier", "Customer", "Both", "Other"].includes(
+      categoryValue,
+    )
+      ? categoryValue
+      : "Supplier";
 
-      const payload = {
-        name,
-        company: String(row.company || row.companyname || "").trim() || "",
-        phone: String(row.phone || "").trim() || "",
-        email: String(row.email || "").trim() || "",
-        address: String(row.address || "").trim() || "",
-        notes: String(row.notes || "").trim() || "",
-        category,
-        isActive: true,
-      };
+    const payload = {
+      name,
+      company: String(row.company || row.companyname || row.supplierCompany || "").trim() || "",
+      phone: String(row.phone || row.supplierPhone || "").trim() || "", // <--- Add row.supplierPhone fallback here
+      email: String(row.email || row.supplierEmail || "").trim() || "",  // <--- Add row.supplierEmail fallback here
+      address: String(row.address || row.supplierAddress || "").trim() || "", // <--- Add row.supplierAddress fallback here
+      notes: String(row.notes || row.supplierNotes || "").trim() || "",
+      category,
+      isActive: true,
+    };
 
       try {
         const existing = await Contact.findOne({ name });
