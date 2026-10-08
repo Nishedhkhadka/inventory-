@@ -20,8 +20,6 @@ import { protect } from "./middleware/auth.js";
 import locationRoutes from "./routes/locations.js";
 import transferRoutes from "./routes/transfers.js";
 
-app.use("/api/locations", locationRoutes);
-app.use("/api/transfers", transferRoutes);
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -38,6 +36,8 @@ const allowedOrigins = [
     .map((origin) => origin.trim())
     .filter(Boolean),
 ];
+app.use("/api/locations", locationRoutes);
+app.use("/api/transfers", transferRoutes);
 
 app.use(
   cors({
