@@ -3,7 +3,7 @@ import Product from "../models/Product.js";
 import {
   reconcileStockForPurchase,
   reconcileCostPriceForPurchase,
-} from "./inventoryService.js";
+} from "../services/inventoryService.js";
 
 // GET /api/purchases
 export const getPurchases = async (req, res) => {
