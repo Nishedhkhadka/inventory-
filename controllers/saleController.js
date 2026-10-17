@@ -1,6 +1,6 @@
 import Sale from "../models/Sale.js";
 import Product from "../models/Product.js";
-import { reconcileStockForSale } from "./inventoryService.js";
+import { reconcileStockForSale } from "../services/inventoryService.js";
 
 /*
  * GET /api/sales
