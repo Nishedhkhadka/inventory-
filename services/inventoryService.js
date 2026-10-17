@@ -194,6 +194,10 @@ export async function reconcileStockForPurchase({
   return applyStockDelta(productId, delta, newColor, newLocationId);
 }
 
+/**
+ * Implements Perpetual Weighted Average Inventory Costing.
+ * Automatically computes the new weighted average unit cost whenever inventory purchases are delivered.
+ */
 export async function reconcileCostPriceForPurchase({
   productId,
   oldStatus = null,
@@ -215,10 +219,17 @@ export async function reconcileCostPriceForPurchase({
   const costPerUnit = (cost || 0) / newQuantity;
   const oldStock = Math.max(0, product.currentStock || 0);
   const oldAvgCost = product.costPrice || 0;
-  const newAvgCost = (oldAvgCost * oldStock + costPerUnit * addedUnits) / (oldStock + addedUnits);
+  const totalUnits = oldStock + addedUnits;
 
-  await Product.findByIdAndUpdate(productId, { costPrice: Math.round(newAvgCost * 100) / 100 });
-  return newAvgCost;
+  // Perpetual Weighted Average Formula
+  const newAvgCost = totalUnits > 0 
+    ? (oldAvgCost * oldStock + costPerUnit * addedUnits) / totalUnits 
+    : costPerUnit;
+
+  const roundedAvgCost = Math.round(newAvgCost * 100) / 100;
+
+  await Product.findByIdAndUpdate(productId, { costPrice: roundedAvgCost });
+  return roundedAvgCost;
 }
 
 /**
