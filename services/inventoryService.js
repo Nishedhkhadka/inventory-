@@ -195,8 +195,8 @@ export async function reconcileStockForPurchase({
 }
 
 /**
- * Implements Perpetual Weighted Average Inventory Costing.
- * Automatically computes the new weighted average unit cost whenever inventory purchases are delivered.
+ * Implements Perpetual Weighted Average Inventory Costing with full reversal support.
+ * Automatically computes or reverts the weighted average unit cost whenever inventory purchases change status.
  */
 export async function reconcileCostPriceForPurchase({
   productId,
@@ -210,23 +210,36 @@ export async function reconcileCostPriceForPurchase({
 }) {
   const before = oldStatus && oldHasProduct ? purchaseStockEffect(oldStatus, oldQuantity, true) : 0;
   const after = newStatus && newHasProduct ? purchaseStockEffect(newStatus, newQuantity, true) : 0;
-  const addedUnits = after - before;
-  if (addedUnits <= 0 || !newQuantity) return null;
+  const netUnits = after - before;
+  if (netUnits === 0 || !newQuantity) return null;
 
   const product = await Product.findById(productId);
   if (!product) return null;
 
   const costPerUnit = (cost || 0) / newQuantity;
-  const oldStock = Math.max(0, product.currentStock || 0);
-  const oldAvgCost = product.costPrice || 0;
-  const totalUnits = oldStock + addedUnits;
+  const currentStock = Math.max(0, product.currentStock || 0);
+  const currentAvgCost = product.costPrice || 0;
 
-  // Perpetual Weighted Average Formula
-  const newAvgCost = totalUnits > 0 
-    ? (oldAvgCost * oldStock + costPerUnit * addedUnits) / totalUnits 
-    : costPerUnit;
+  let newAvgCost;
+  const newStock = currentStock + netUnits;
 
-  const roundedAvgCost = Math.round(newAvgCost * 100) / 100;
+  if (netUnits > 0) {
+    // Adding units (e.g. Ordered -> Delivered)
+    const totalUnits = currentStock + netUnits;
+    newAvgCost = totalUnits > 0 
+      ? (currentAvgCost * currentStock + costPerUnit * netUnits) / totalUnits 
+      : costPerUnit;
+  } else {
+    // Removing / reversing units (e.g. Delivered -> Ordered)
+    if (newStock <= 0) {
+      newAvgCost = 0;
+    } else {
+      const numerator = (currentAvgCost * currentStock) + (netUnits * costPerUnit);
+      newAvgCost = numerator / newStock;
+    }
+  }
+
+  const roundedAvgCost = Math.round(Math.max(0, newAvgCost) * 100) / 100;
 
   await Product.findByIdAndUpdate(productId, { costPrice: roundedAvgCost });
   return roundedAvgCost;
