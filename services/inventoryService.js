@@ -221,4 +221,42 @@ export async function reconcileCostPriceForPurchase({
   return newAvgCost;
 }
 
+/**
+ * Matches OCR text against pending sales orders.
+ */
+export function matchOrder(ocrText, pendingSales) {
+  const text = (ocrText || "").toLowerCase();
+  const matches = (pendingSales || []).map((sale) => {
+    let score = 0;
+    const matchedOn = [];
+
+    const orderId = (sale.orderId || "").toLowerCase();
+    if (orderId && text.includes(orderId)) {
+      score += 50;
+      matchedOn.push("orderId");
+    }
+
+    const phone = (sale.customerPhone || "").toLowerCase();
+    if (phone && text.includes(phone)) {
+      score += 40;
+      matchedOn.push("phone");
+    }
+
+    const customer = (sale.pointOfContact || "").toLowerCase();
+    if (customer && customer.length > 2 && text.includes(customer)) {
+      score += 30;
+      matchedOn.push("customer");
+    }
+
+    return {
+      sale,
+      score,
+      matchedOn,
+    };
+  });
+
+  matches.sort((a, b) => b.score - a.score);
+  return { matches };
+}
+
 export { applyStockDelta };
