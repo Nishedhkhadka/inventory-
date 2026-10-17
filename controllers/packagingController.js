@@ -1,7 +1,7 @@
 import Sale from "../models/Sale.js";
 import { reconcileStockForSale } from "./inventoryService.js";
 import { extractText } from "../services/ocr.service.js";
-import { matchOrder } from "../services/orderMatching.service.js";
+import { matchOrder } from "../services/inventoryService.js";
 
 // GET /api/packaging/pending
 // Every order still 'In progress', newest first — the packaging page's
