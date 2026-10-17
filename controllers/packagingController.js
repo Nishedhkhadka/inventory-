@@ -1,5 +1,5 @@
 import Sale from "../models/Sale.js";
-import { reconcileStockForSale } from "./inventoryService.js";
+import { reconcileStockForSale } from "../services/inventoryService.js";
 import { extractText } from "../services/ocr.service.js";
 import { matchOrder } from "../services/inventoryService.js";
 
