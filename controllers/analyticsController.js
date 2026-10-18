@@ -18,6 +18,27 @@ export const getSummary = async (req, res) => {
     const saleDateMatch = dateRangeMatch("orderDate", from, to);
     const purchaseDateMatch = dateRangeMatch("orderDate", from, to);
 
+    // Determine if the range is short (e.g., week or month view) to group by day instead of month
+    let isShortRange = false;
+    if (from && to) {
+      const diffTime = Math.abs(new Date(to) - new Date(from));
+      const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+      if (diffDays <= 45) {
+        isShortRange = true;
+      }
+    }
+
+    const revenueTrajectoryGroup = isShortRange
+      ? {
+          year: { $year: "$orderDate" },
+          month: { $month: "$orderDate" },
+          day: { $dayOfMonth: "$orderDate" },
+        }
+      : {
+          year: { $year: "$orderDate" },
+          month: { $month: "$orderDate" },
+        };
+
     const [
       revenueResult,
       expenseResult,
@@ -96,23 +117,23 @@ export const getSummary = async (req, res) => {
         { $sort: { total: -1 } },
       ]),
 
-      // 6. Monthly Revenue Trajectory (Latest 12 months)
+      // 6. Revenue Trajectory (Dynamic: Daily for short ranges, Monthly for long ranges)
       Sale.aggregate([
         { $match: { status: "Delivered", ...saleDateMatch } },
         {
           $group: {
-            _id: {
-              year: { $year: "$orderDate" },
-              month: { $month: "$orderDate" },
-            },
+            _id: revenueTrajectoryGroup,
             revenue: { $sum: "$lineTotal" },
           },
         },
-        { $sort: { "_id.year": -1, "_id.month": -1 } },
-        { $limit: 12 },         {$project: {
+        isShortRange
+          ? { $sort: { "_id.year": 1, "_id.month": 1, "_id.day": 1 } }
+          : { $sort: { "_id.year": -1, "_id.month": -1 } },
+        ...(isShortRange ? [] : [{ $limit: 12 }]), {$project: {
             _id: 0,
             year: "$_id.year",
             month: "$_id.month",
+            ...(isShortRange ? { day: "$_id.day" } : {}),
             revenue: 1,
           },
         },
@@ -185,8 +206,8 @@ export const getSummary = async (req, res) => {
       warehouseAssetValuation,
       productPerformance,
       expenseBreakdown,
-      // Reverse monthly revenue back to chronological order (oldest to newest)
-      monthlyRevenue: monthlyRevenue.reverse(),
+      // Reverse monthly revenue back to chronological order only if it's long range (short range is already sorted ascending)
+      monthlyRevenue: isShortRange ? monthlyRevenue : monthlyRevenue.reverse(),
       range: { from: from || null, to: to || null },
     });
   } catch (err) {
