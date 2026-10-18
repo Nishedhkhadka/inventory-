@@ -27,15 +27,17 @@ export async function initializeDefaultLocationStocks() {
         for (const colorObj of product.colors) {
           const exists = (product.locationStocks || []).some(
             (ls) =>
+              ls.location &&
               ls.location.toString() === defaultLoc._id.toString() &&
               ls.color === colorObj.name
           );
 
           if (!exists) {
+            if (!product.locationStocks) product.locationStocks = [];
             product.locationStocks.push({
               location: defaultLoc._id,
               color: colorObj.name,
-              stock: colorObj.stock || 0,
+              stock: Math.max(0, colorObj.stock || 0),
             });
             updated = true;
           }
@@ -44,15 +46,17 @@ export async function initializeDefaultLocationStocks() {
         // 2. Uncoloured product fallback
         const exists = (product.locationStocks || []).some(
           (ls) =>
+            ls.location &&
             ls.location.toString() === defaultLoc._id.toString() &&
             (!ls.color || ls.color === "")
         );
 
         if (!exists) {
+          if (!product.locationStocks) product.locationStocks = [];
           product.locationStocks.push({
             location: defaultLoc._id,
             color: "",
-            stock: product.currentStock || 0,
+            stock: Math.max(0, product.currentStock || 0),
           });
           updated = true;
         }
@@ -69,7 +73,7 @@ export async function initializeDefaultLocationStocks() {
 
 /**
  * Applies a signed unit delta to a product's stock, to the matching colour
- * variant, and to the specified location's stock breakdown.
+ * variant, and to the specified location's stock breakdown, ensuring no negatives.
  */
 async function applyStockDelta(productId, delta, color = null, locationId = null) {
   if (!delta) return null;
@@ -82,47 +86,52 @@ async function applyStockDelta(productId, delta, color = null, locationId = null
     if (defaultLoc) targetLocationId = defaultLoc._id;
   }
 
+  // 1. Update variant color stock (clamped at 0)
   if (colorName) {
-    await Product.updateOne(
-      { _id: productId, "colors.name": colorName },
-      { $inc: { "colors.$.stock": delta } }
-    );
+    const prodCheck = await Product.findOne({ _id: productId, "colors.name": colorName });
+    if (prodCheck) {
+      const targetColor = prodCheck.colors.find((c) => c.name === colorName);
+      const newColorStock = Math.max(0, (targetColor?.stock || 0) + delta);
+      await Product.updateOne(
+        { _id: productId, "colors.name": colorName },
+        { $set: { "colors.$.stock": newColorStock } }
+      );
+    }
   }
 
-  await Product.updateOne({ _id: productId }, { $inc: { currentStock: delta } });
+  // 2. Update global product currentStock (clamped at 0)
+  const productDoc = await Product.findById(productId);
+  if (productDoc) {
+    const newGlobalStock = Math.max(0, (productDoc.currentStock || 0) + delta);
+    await Product.updateOne({ _id: productId }, { $set: { currentStock: newGlobalStock } });
+  }
 
+  // 3. Update locationStocks breakdown safely without duplicating
   if (targetLocationId) {
-    const product = await Product.findById(productId);
-    if (product) {
-      const locMatch = (product.locationStocks || []).find(
+    const freshProduct = await Product.findById(productId);
+    if (freshProduct) {
+      if (!freshProduct.locationStocks) freshProduct.locationStocks = [];
+
+      const locMatchIndex = freshProduct.locationStocks.findIndex(
         (ls) =>
+          ls.location &&
           ls.location.toString() === targetLocationId.toString() &&
           (ls.color || "") === colorName
       );
 
-      if (locMatch) {
-        await Product.updateOne(
-          {
-            _id: productId,
-            "locationStocks.location": targetLocationId,
-            "locationStocks.color": colorName,
-          },
-          { $inc: { "locationStocks.$.stock": delta } }
-        );
+      if (locMatchIndex > -1) {
+        const existingStock = freshProduct.locationStocks[locMatchIndex].stock || 0;
+        const updatedLocStock = Math.max(0, existingStock + delta);
+        freshProduct.locationStocks[locMatchIndex].stock = updatedLocStock;
       } else {
-        await Product.updateOne(
-          { _id: productId },
-          {
-            $push: {
-              locationStocks: {
-                location: targetLocationId,
-                color: colorName,
-                stock: Math.max(0, delta),
-              },
-            },
-          }
-        );
+        freshProduct.locationStocks.push({
+          location: targetLocationId,
+          color: colorName,
+          stock: Math.max(0, delta),
+        });
       }
+
+      await freshProduct.save();
     }
   }
 
@@ -196,7 +205,6 @@ export async function reconcileStockForPurchase({
 
 /**
  * Implements Perpetual Weighted Average Inventory Costing with full reversal support.
- * Automatically computes or reverts the weighted average unit cost whenever inventory purchases change status.
  */
 export async function reconcileCostPriceForPurchase({
   productId,
@@ -224,13 +232,11 @@ export async function reconcileCostPriceForPurchase({
   const newStock = currentStock + netUnits;
 
   if (netUnits > 0) {
-    // Adding units (e.g. Ordered -> Delivered)
     const totalUnits = currentStock + netUnits;
     newAvgCost = totalUnits > 0 
       ? (currentAvgCost * currentStock + costPerUnit * netUnits) / totalUnits 
       : costPerUnit;
   } else {
-    // Removing / reversing units (e.g. Delivered -> Ordered)
     if (newStock <= 0) {
       newAvgCost = 0;
     } else {
@@ -245,9 +251,6 @@ export async function reconcileCostPriceForPurchase({
   return roundedAvgCost;
 }
 
-/**
- * Matches OCR text against pending sales orders.
- */
 export function matchOrder(ocrText, pendingSales) {
   const text = (ocrText || "").toLowerCase();
   const matches = (pendingSales || []).map((sale) => {
