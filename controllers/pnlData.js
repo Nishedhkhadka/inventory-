@@ -26,7 +26,7 @@ export async function getPnLData({ from, to }) {
   const saleDateMatch = dateRangeMatch("orderDate", from, to);
   const purchaseDateMatch = dateRangeMatch("orderDate", from, to);
 
-  const [deliveredLines, expenseRows, inventoryPurchaseResult, deliveryResult] =
+  const [deliveredLines, expenseRows, inventoryPurchaseResult, deliveryResult, damagedResult] =
     await Promise.all([
       Sale.aggregate([
         { $match: { status: "Delivered", ...saleDateMatch } },
@@ -122,15 +122,53 @@ export async function getPnLData({ from, to }) {
           },
         },
       ]),
+
+      // Aggregate cost of items marked as Damaged
+      Sale.aggregate([
+        { $match: { status: "Damaged", ...saleDateMatch } },
+        {
+          $group: {
+            _id: "$product",
+            unitsDamaged: { $sum: "$quantity" },
+          },
+        },
+        {
+          $lookup: {
+            from: "products",
+            localField: "_id",
+            foreignField: "_id",
+            as: "product",
+          },
+        },
+        { $unwind: "$product" },
+        {
+          $project: {
+            _id: 0,
+            total: {
+              $multiply: ["$unitsDamaged", { $ifNull: ["$product.costPrice", 0] }],
+            },
+          },
+        },
+        { $group: { _id: null, total: { $sum: "$total" } } },
+      ]),
     ]);
 
   const revenue = deliveredLines.reduce((s, l) => s + l.revenue, 0);
   const cogs = deliveredLines.reduce((s, l) => s + l.cogs, 0);
   const grossProfit = revenue - cogs;
-  const operatingExpenses = expenseRows.reduce((s, r) => s + r.total, 0);
+
+  const damagedCost = damagedResult[0]?.total || 0;
+  const allExpenseRows = [...expenseRows];
+  if (damagedCost > 0) {
+    allExpenseRows.push({ category: "Damaged goods", total: damagedCost });
+    allExpenseRows.sort((a, b) => b.total - a.total);
+  }
+
+  const operatingExpenses = allExpenseRows.reduce((s, r) => s + r.total, 0);
   const deliveryFeesCollected = deliveryResult[0]?.feesCollected || 0;
   const deliveryCost = deliveryResult[0]?.costPaid || 0;
   const ordersWithUnknownDeliveryFee = deliveryResult[0]?.unknownFeeCount || 0;
+
   // Delivery fees collected are revenue the business actually received —
   // they add to profit; delivery cost paid to the courier is a real
   // expense — it subtracts. Net delivery effect can be positive (fee
@@ -146,7 +184,7 @@ export async function getPnLData({ from, to }) {
     grossProfit,
     grossMarginPct: revenue ? (grossProfit / revenue) * 100 : 0,
     operatingExpenses,
-    operatingExpenseBreakdown: expenseRows,
+    operatingExpenseBreakdown: allExpenseRows,
     deliveryFeesCollected,
     deliveryCost,
     deliveryNet: deliveryFeesCollected - deliveryCost,
