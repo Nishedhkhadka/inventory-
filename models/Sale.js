@@ -33,7 +33,7 @@ const saleSchema = new mongoose.Schema(
     },
     status: {
       type: String,
-      enum: ["In progress", "Packed", "Delivered", "Returned", "Damaged"],
+      enum: ["In progress", "Packed","Transit","Delivered", "Returned", "Damaged"],
       default: "In progress",
     },
     orderDate: {

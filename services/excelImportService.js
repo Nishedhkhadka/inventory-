@@ -50,13 +50,7 @@ const ALIASES = {
   deliverypartner: "deliveryPartner",
   column12: "column12",
   paid: "paid",
-  // "Colour" was never aliased before — a pre-existing gap affecting both
-  // the original business sheet AND our own export, since both use this
-  // header. Fixed here rather than treated as export-only.
   colour: "color",
-  // The app's own "export everything" workbook uses different column
-  // names than the original business sheet — these let the same import
-  // logic recognize either one.
   sku: "itemId",
   retailprice: "price",
   costprice: "costPrice",
@@ -70,7 +64,7 @@ const ALIASES = {
   customer: "pointOfContact",
   phone: "customerPhone",
   billno: "billNo",
-billnumber: "billNo",
+  billnumber: "billNo",
   payment: "paid",
   item: "product",
   category: "category",
@@ -125,10 +119,6 @@ function toNumber(value, fallback = 0) {
   return isNaN(n) ? fallback : n;
 }
 
-// Like toNumber, but returns null instead of a fallback so callers can tell
-// "this cell holds a real number" apart from "this cell is empty or text".
-// Used for the Sales sheet's Delivery column, which is a charge amount in
-// most rows but occasionally free text (e.g. a courier name) in others.
 function toNumberOrNull(value) {
   if (value === "" || value === null || value === undefined) return null;
   const n = Number(String(value).replace(/[,$]/g, ""));
@@ -143,15 +133,6 @@ function truthy(value) {
   return ["true", "yes", "y", "1"].includes(s);
 }
 
-// Manual-first rule: imported sheet data should only write into the
-// supplier/contact directory when the workbook includes an explicit
-// Contacts sheet. Purchase and Sales rows are never allowed to synthesize
-// contact records on their own, since mixed supplier data from historical
-// sheets is not reliable as a source of truth.
-
-// Parses our own export's "Colour breakdown" column, formatted as
-// "Red: 5, Blue: 3" (see exportController.js productRow) — the inverse of
-// that same join, so Product.colors round-trips through export/import.
 function parseColorBreakdown(raw) {
   if (!raw) return [];
   return String(raw)
@@ -168,6 +149,7 @@ const PRODUCT_TYPES = ["Lamp", "Wallet", "Pouch", "Decor", "Packaging"];
 const SALE_STATUSES = [
   "Delivered",
   "Packed",
+  "Transit",
   "Returned",
   "Damaged",
   "In progress",
@@ -206,13 +188,6 @@ function guessSaleStatus(raw) {
   return match || "In progress";
 }
 
-// Sheet only ever needs to tell us "still just ordered" vs "further along
-// than that" — the app itself only has two states (Ordered/Delivered), and
-// only Ordered withholds stock (see inventoryService.purchaseStockEffect).
-// Any recognizable "further along" word (Approved, Dispatched, Arrived,
-// Delivered, etc.) counts as received into stock, since the sheet's own
-// 4-stage flow (Order -> Approved -> Dispatched -> Delivered) has no stage
-// that's ambiguous about the goods being accounted for.
 const STILL_JUST_ORDERED = ["order", "ordered", "requested", "pending", ""];
 
 function guessPurchaseStatus(raw) {
@@ -244,14 +219,6 @@ function classifyPurchaseCategory(itemName, showInInventory) {
   return showInInventory || itemName ? "Inventory" : "Miscellaneous";
 }
 
-/**
- * Targeted fix for sales whose delivery COST (what was paid to the
- * courier — see models/Sale.js) is missing or wrong: matches each Sales
- * row to its existing Sale by Order ID and patches only deliveryCost.
- * Never touches deliveryFeeCharged (the customer-facing amount) — the old
- * sheet's Delivery column has never represented that. Safe to run
- * repeatedly; never creates or deletes a Sale.
- */
 export async function backfillDeliveryCosts(workbook) {
   const salesRows = sheetRows(workbook, "Sales");
   if (!salesRows) {
@@ -299,22 +266,6 @@ export async function backfillDeliveryCosts(workbook) {
   return result;
 }
 
-/**
- * Fixes the Approved/Dispatched-mapped-to-Ordered bug retroactively: for
- * purchases already imported before guessPurchaseStatus recognized those
- * words, this re-reads the Purchase sheet, matches each row to its
- * existing Purchase by the Order column (orderRef), and — only where the
- * sheet's status now computes as further along than what's stored —
- * corrects the status label. Deliberately does NOT touch stock: the
- * Inventory sheet's Stock column already reflects every received
- * purchase regardless of what our status field said (see
- * resyncStockFromInventorySheet, which is the actual stock fix) — so
- * crediting stock here on top of that would double-count. This is a
- * bookkeeping correction (so status filters/reports are accurate), not a
- * stock correction. Never touches a purchase whose stored status already
- * matches, and never touches rows with a blank Order column (nothing
- * reliable to match on).
- */
 export async function backfillPurchaseStatuses(workbook) {
   const purchaseRows = sheetRows(workbook, "Purchase");
   if (!purchaseRows) {
@@ -364,22 +315,6 @@ export async function backfillPurchaseStatuses(workbook) {
   return result;
 }
 
-/**
- * Directly fixes stock counts thrown off by the historical
- * double-deduction bug (older versions of this import replayed every
- * non-Returned Sales row against currentStock, even though the Inventory
- * sheet's Stock column was already the reconciled current count — see
- * runExcelImport's Sales section for the full explanation). This
- * re-reads the Inventory sheet and SETS each matched product's
- * currentStock directly to the sheet's value — an overwrite, not a
- * delta — since that's the one number in this whole system proven to
- * already be correct.
- *
- * This is a blunt instrument: run it right after noticing stock looks
- * wrong from a bad import, not as an ongoing correction tool once the
- * app is the live source of truth — anything sold/received through the
- * app itself since the import gets overwritten too.
- */
 export async function resyncStockFromInventorySheet(workbook) {
   const inventoryRows = sheetRows(workbook, "Inventory");
   if (!inventoryRows) {
@@ -407,8 +342,6 @@ export async function resyncStockFromInventorySheet(workbook) {
       continue;
     }
 
-    // Escape regex metacharacters so a name like "Magsafe (2-pack)" doesn't
-    // break the match.
     const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     const product = await Product.findOne({
       name: new RegExp(`^${escaped}$`, "i"),
@@ -432,15 +365,6 @@ export async function resyncStockFromInventorySheet(workbook) {
   return result;
 }
 
-/**
- * Runs the full Inventory -> Purchase -> Sales import against an
- * already-connected mongoose instance.
- *
- * @param {Object} workbook - result of XLSX.readFile(...) or XLSX.read(buffer)
- * @param {Object} opts
- * @param {Boolean} opts.reset - wipe Product/Purchase/Sale collections first
- * @returns {Object} stats + warnings, and validation errors (sheet missing, etc.)
- */
 export async function runExcelImport(workbook, { reset = false } = {}) {
   const stats = {
     productsCreated: 0,
@@ -490,30 +414,28 @@ export async function runExcelImport(workbook, { reset = false } = {}) {
     ]);
   }
 
-// ── 0. Optional Contacts sheet -> Contact ──
-if (contactRows) {
-  for (const row of contactRows) {
-    const name = String(row.name || row.contact || row.supplier || "").trim();
-    if (!name) continue;
+  if (contactRows) {
+    for (const row of contactRows) {
+      const name = String(row.name || row.contact || row.supplier || "").trim();
+      if (!name) continue;
 
-    const categoryValue = String(row.category || "Supplier").trim();
-    const category = ["Supplier", "Customer", "Both", "Other"].includes(
-      categoryValue,
-    )
-      ? categoryValue
-      : "Supplier";
+      const categoryValue = String(row.category || "Supplier").trim();
+      const category = ["Supplier", "Customer", "Both", "Other"].includes(
+        categoryValue,
+      )
+        ? categoryValue
+        : "Supplier";
 
-    const payload = {
-      name,
-      company: String(row.company || row.companyname || row.supplierCompany || "").trim() || "",
-      // ADD row.customerPhone fallback here because ALIASES renames 'phone' -> 'customerPhone'
-      phone: String(row.phone || row.customerPhone || row.supplierPhone || "").trim() || "",
-      email: String(row.email || row.supplierEmail || "").trim() || "",
-      address: String(row.address || row.supplierAddress || "").trim() || "",
-      notes: String(row.notes || row.supplierNotes || "").trim() || "",
-      category,
-      isActive: true,
-    };
+      const payload = {
+        name,
+        company: String(row.company || row.companyname || row.supplierCompany || "").trim() || "",
+        phone: String(row.phone || row.customerPhone || row.supplierPhone || "").trim() || "",
+        email: String(row.email || row.supplierEmail || "").trim() || "",
+        address: String(row.address || row.supplierAddress || "").trim() || "",
+        notes: String(row.notes || row.supplierNotes || "").trim() || "",
+        category,
+        isActive: true,
+      };
 
       try {
         const existing = await Contact.findOne({ name });
@@ -554,7 +476,6 @@ if (contactRows) {
     }
   }
 
-  // ── 1. Inventory sheet -> Product ──
   const productByName = new Map();
   for (const p of await Product.find({})) {
     productByName.set(p.name.trim().toLowerCase(), p);
@@ -578,11 +499,6 @@ if (contactRows) {
       sku: sku || undefined,
       type: guessProductType(row.type, name),
       retailPrice: toNumber(row.price, 0),
-      // Our own export includes an already-computed cost price and
-      // low-stock threshold — use them directly when present. The
-      // original business sheet has neither: costPrice is left at 0 here
-      // and gets backfilled below from Purchase history instead (see the
-      // cost accumulator), and lowStockAlert falls back to a sane default.
       costPrice: toNumber(row.costPrice, 0),
       currentStock: toNumber(row.stock, 0),
       lowStockAlert: toNumber(row.lowStockAlert, 5),
@@ -598,7 +514,6 @@ if (contactRows) {
     }
   }
 
-  // ── 2. Purchase sheet -> Purchase ──
   const costAccumulator = new Map();
 
   for (const row of purchaseRows) {
@@ -606,9 +521,6 @@ if (contactRows) {
     if (!itemName) continue;
 
     const showInInventory = truthy(row.showInInventory);
-    // Our own export writes an explicit Category column — trust it
-    // directly rather than re-guessing from the item name (which is what
-    // the original business sheet, with no Category column, still needs).
     const explicitCategory = String(row.category || "").trim();
     const category =
       explicitCategory || classifyPurchaseCategory(itemName, showInInventory);
@@ -680,7 +592,6 @@ if (contactRows) {
     stats.productsWithCostPriceUpdated++;
   }
 
-  // ── 3. Sales sheet -> Sale ──
   const seenOrderIds = new Set();
   for (const s of await Sale.find({}, "orderId")) seenOrderIds.add(s.orderId);
 
@@ -710,32 +621,19 @@ if (contactRows) {
     const status = guessSaleStatus(row.status);
     const quantity = toNumber(row.quantity, 1) || 1;
 
-    // Two possible sheet shapes. Detected by column presence (not just a
-    // blank value) — normalizeRow gives every row of a sheet the same set
-    // of keys, so checking one row's keys tells us which shape the whole
-    // sheet is.
     let unitPrice, lineTotal;
     const hasExplicitLineTotal = String(row.lineTotal ?? "").trim() !== "";
     const hasExplicitUnitPrice = String(row.unitPrice ?? "").trim() !== "";
 
     if (hasExplicitLineTotal) {
-      // Our own export workbook: keep the exact line total the user wrote,
-      // even if the rest of the order is blank or the product has a default
-      // retail price. Do not backfill from the product when the value is blank.
       lineTotal = toNumber(row.lineTotal, 0);
       unitPrice = hasExplicitUnitPrice
         ? toNumber(row.unitPrice, 0)
         : Math.round((lineTotal / quantity) * 100) / 100;
     } else if (hasExplicitUnitPrice) {
-      // If the row carries a unit rate but not a line total, preserve that
-      // explicit rate and do not fabricate a total from the product's retail
-      // price unless the export file already included a total.
       unitPrice = toNumber(row.unitPrice, 0);
       lineTotal = 0;
     } else {
-      // Original business sheet — Price is the row's TOTAL value, but a blank
-      // price must remain blank/zero instead of silently defaulting to the
-      // product's retail price and creating a fake line total.
       const priceValue = String(row.price ?? "").trim();
       lineTotal = priceValue === "" ? 0 : toNumber(row.price, 0);
       unitPrice =
@@ -750,17 +648,9 @@ if (contactRows) {
       row.deliveryCost !== undefined ||
       row.deliveryFeeCharged !== undefined
     ) {
-      // Our own export: already split into what the customer was charged
-      // vs. what was actually paid to the courier. A blank cell means
-      // "not recorded on this line" (e.g. every line after the first in a
-      // multi-product order only carries delivery info on the first —
-      // see Sale model) — never coerced to 0, which would misreport it as
-      // a known $0 fee.
       deliveryCost = toNumberOrNull(row.deliveryCost) || 0;
       deliveryFeeCharged = toNumberOrNull(row.deliveryFeeCharged);
     } else {
-      // Original business sheet — single Delivery column, confirmed to be
-      // the ACTUAL cost paid to the courier, not a customer-facing fee.
       const deliveryCostParsed = toNumberOrNull(row.delivery);
       deliveryCost = deliveryCostParsed || 0;
       deliveryFeeCharged = null;
@@ -773,7 +663,7 @@ if (contactRows) {
     const doc = {
       orderId,
       product: matchedProduct._id,
-     billNo: String(row.billNo || "").trim() || undefined,
+      billNo: String(row.billNo || "").trim() || undefined,
       color: String(row.color || "").trim() || undefined,
       status,
       orderDate: toDate(row.orderDate) || new Date(),
@@ -792,16 +682,6 @@ if (contactRows) {
     try {
       await Sale.create(doc);
       stats.salesCreated++;
-      // NOTE: does NOT touch Product.currentStock here. The Inventory
-      // sheet's Stock column is the business's own already-reconciled
-      // current count (verified against real data: it equals total
-      // received purchases minus total non-Returned sales for every
-      // product). Sales/Purchase sheets are historical logs that already
-      // fed into that number — replaying them again during import would
-      // double-deduct every sale on top of a baseline that already
-      // accounts for it. Only live, forward-going Sales/Expenses page
-      // activity (via saleController/purchaseController) should move
-      // stock from here on.
     } catch (err) {
       warn(
         `Could not import sale row ${i + 2} (order ${orderId}): ${err.message}`,
