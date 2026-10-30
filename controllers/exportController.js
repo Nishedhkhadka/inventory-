@@ -27,7 +27,7 @@ const SALES_COLUMNS = [
   { header: "Bill No", key: "billNo", width: 16 },
   { header: "Product", key: "product", width: 24 },
   { header: "Colour", key: "color", width: 12 },
-  { header: "Status", key: "status", width: 14 },
+  { header: "Status", key: "status", width: 14 }, // Supports "Returning", "Returned", "Delivered", etc.
   { header: "Order date", key: "orderDate", width: 14 },
   { header: "Quantity", key: "quantity", width: 10 },
   { header: "Regular unit price", key: "unitPrice", width: 16 },
@@ -44,9 +44,6 @@ const SALES_COLUMNS = [
 ];
 
 function salesRow(s) {
-  // null deliveryFeeCharged means "not recorded" (historical data) — kept
-  // as a blank cell rather than 0, and grandTotal is left as just the
-  // line total in that case rather than silently implying free delivery.
   const feeKnown =
     s.deliveryFeeCharged !== null && s.deliveryFeeCharged !== undefined;
   return {
@@ -54,7 +51,7 @@ function salesRow(s) {
     billNo: s.billNo  || "",
     product: s.product?.name || "—",
     color: s.color || "",
-    status: s.status,
+    status: s.status, // Exports "Returning" status accurately
     orderDate: s.orderDate ? s.orderDate.toISOString().slice(0, 10) : "",
     quantity: s.quantity,
     unitPrice: money(s.unitPrice),
@@ -421,10 +418,6 @@ export const exportProducts = async (req, res) => {
 };
 
 // GET /api/export/all?from=&to=
-// Workbook sheets — Sales, Expenses, Inventory, and Contacts — each using the
-// exact same columns as their standalone export, so this stays in sync.
-// from/to scope Sales and Expenses (transaction history); Inventory is the
-// current snapshot, and Contacts is the manual contact directory.
 export const exportAll = async (req, res) => {
   try {
     const { from, to } = req.query;

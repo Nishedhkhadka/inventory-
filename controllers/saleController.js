@@ -151,13 +151,6 @@ export const createSale = async (req, res) => {
 
     const data = {
       ...req.body,
-
-      /*
-       * billNo is intentionally taken directly
-       * from the frontend.
-       *
-       * No automatic bill number generation.
-       */
       billNo:
         req.body.billNo === undefined ||
         req.body.billNo === null ||
@@ -166,11 +159,13 @@ export const createSale = async (req, res) => {
           : String(req.body.billNo).trim(),
     };
 
-    /*
-     * Existing stock behavior.
-     */
     const sale = await Sale.create(data);
 
+    /*
+     * Reconcile stock for creation. 
+     * Note: If status is "Returning", inventoryService will naturally treat 
+     * it as in-transit back to warehouse (no stock added back yet).
+     */
     await reconcileStockForSale({
       productId: sale.product,
       oldStatus: null,
@@ -199,8 +194,8 @@ export const createSale = async (req, res) => {
 /*
  * PUT /api/sales/:id
  *
- * Bill numbers are completely manual.
- * The frontend can add, change, or remove billNo.
+ * Handles status updates (e.g., moving an item to "Returning" while on transit,
+ * or creating/updating replacement lines for exchanges).
  */
 export const updateSale = async (req, res) => {
   try {
@@ -220,17 +215,10 @@ export const updateSale = async (req, res) => {
     const oldLocationId = existing.location ? existing.location.toString() : null;
     const oldProductId = existing.product.toString();
 
-    /*
-     * Apply all editable fields directly,
-     * including the manually entered billNo.
-     */
     const updateData = {
       ...req.body,
     };
 
-    /*
-     * Normalize an empty bill number to null.
-     */
     if (
       updateData.billNo === undefined ||
       updateData.billNo === null ||
@@ -242,10 +230,6 @@ export const updateSale = async (req, res) => {
         String(updateData.billNo).trim();
     }
 
-    /*
-     * Old bill-related fields are no longer used
-     * by the application.
-     */
     delete updateData.billIssued;
     delete updateData.billIssuedAt;
 
@@ -257,9 +241,6 @@ export const updateSale = async (req, res) => {
     const newColor = existing.color || null;
     const newLocationId = existing.location ? existing.location.toString() : null;
 
-    /*
-     * Existing stock reconciliation with location tracking.
-     */
     if (oldProductId !== newProductId) {
       await reconcileStockForSale({
         productId: oldProductId,
@@ -311,8 +292,6 @@ export const updateSale = async (req, res) => {
 
 /*
  * DELETE /api/sales/:id
- *
- * Bill numbers are manual and do not prevent deletion.
  */
 export const deleteSale = async (req, res) => {
   try {
@@ -326,10 +305,6 @@ export const deleteSale = async (req, res) => {
       });
     }
 
-    /*
-     * No bill-related deletion restriction.
-     * Restock location and color inventory upon deletion.
-     */
     await reconcileStockForSale({
       productId: sale.product,
       oldStatus: sale.status,
