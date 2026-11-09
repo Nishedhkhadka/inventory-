@@ -236,16 +236,61 @@ export const getPurchase = async (req, res) => {
 // POST /api/purchases
 export const createPurchase = async (req, res) => {
   try {
-    if (req.body.product) {
-      const product = await Product.findById(req.body.product);
+    const body = req.body;
+
+    // Support batch creation when multi-color items are passed in a single submission
+    if (Array.isArray(body.items) && body.items.length > 0) {
+      const createdPurchases = [];
+      for (const item of body.items) {
+        const payload = {
+          ...body,
+          items: undefined,
+          color: item.color || null,
+          quantity: item.quantity ? Number(item.quantity) : undefined,
+          cost: Number(item.cost || 0),
+        };
+        if (payload.product) {
+          const product = await Product.findById(payload.product);
+          if (product) payload.productName = payload.productName || product.name;
+        }
+        const purchase = await Purchase.create(payload);
+        if (purchase.product) {
+          await reconcileCostPriceForPurchase({
+            productId: purchase.product,
+            oldStatus: null,
+            oldHasProduct: false,
+            newStatus: purchase.status,
+            newQuantity: purchase.quantity || 0,
+            newHasProduct: true,
+            cost: purchase.cost,
+          });
+          await reconcileStockForPurchase({
+            productId: purchase.product,
+            oldStatus: null,
+            newStatus: purchase.status,
+            newQuantity: purchase.quantity || 0,
+            newColor: purchase.color || null,
+            newHasProduct: true,
+          });
+        }
+        createdPurchases.push(purchase);
+      }
+      const populated = await Purchase.find({
+        _id: { $in: createdPurchases.map((p) => p._id) },
+      }).populate("product", "name sku type currentStock colors");
+      return res.status(201).json(populated);
+    }
+
+    if (body.product) {
+      const product = await Product.findById(body.product);
       if (!product)
         return res.status(400).json({ message: "Product not found" });
       // Keep productName in sync so records stay readable even if the
       // catalog product is later renamed or removed.
-      req.body.productName = req.body.productName || product.name;
+      body.productName = body.productName || product.name;
     }
 
-    const purchase = await Purchase.create(req.body);
+    const purchase = await Purchase.create(body);
 
     if (purchase.product) {
       // Cost-price update must happen BEFORE the stock change below — it
@@ -397,4 +442,4 @@ export const deletePurchase = async (req, res) => {
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
-};
+}
