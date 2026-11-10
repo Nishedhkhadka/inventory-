@@ -19,6 +19,7 @@ import authRoutes from "./routes/auth.js";
 import { protect } from "./middleware/auth.js";
 import locationRoutes from "./routes/locations.js";
 import transferRoutes from "./routes/transfers.js";
+import businessProfileRoutes from "./routes/businessProfile.js";
 import { initializeDefaultLocationStocks } from "./services/inventoryService.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -69,8 +70,7 @@ app.get("/health", healthHandler);
 // Package verification photos, e.g. GET /uploads/packages/169..-photo.jpg
 app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 
-// Login is public; everything else under /api/auth (current user, user
-// management) requires a token, enforced route-by-route inside auth.js.
+// Login is public; everything else under /api/auth requires a token
 app.use("/api/auth", authRoutes);
 
 // Every other /api/* route requires a valid, logged-in session.
@@ -87,6 +87,7 @@ app.use("/api/export", exportRoutes);
 app.use("/api/contacts", contactRoutes);
 app.use("/api/locations", locationRoutes);
 app.use("/api/transfers", transferRoutes);
+app.use("/api/business-profile", businessProfileRoutes);
 
 // 404 fallback
 app.use((req, res) => res.status(404).json({ message: "Route not found" }));
