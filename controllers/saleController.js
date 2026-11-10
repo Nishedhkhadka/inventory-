@@ -131,7 +131,7 @@ export const getSales = async (req, res) => {
 };
 
 /*
- * GET /api/sales/:id (Added missing getSale controller)
+ * GET /api/sales/:id
  */
 export const getSale = async (req, res) => {
   try {
@@ -327,15 +327,38 @@ export const updateSale = async (req, res) => {
     delete updateData.billIssued;
     delete updateData.billIssuedAt;
 
+    // --- DETAILED FIELD-BY-FIELD COMPARISON FOR AUDIT LOGS ---
     const changeSummary = [];
-    if (updateData.status && updateData.status !== oldStatus) {
-      changeSummary.push(`Status changed from "${oldStatus}" to "${updateData.status}"`);
+
+    if (updateData.status !== undefined && updateData.status !== existing.status) {
+      changeSummary.push(`Status: "${existing.status}" → "${updateData.status}"`);
     }
-    if (updateData.quantity !== undefined && Number(updateData.quantity) !== oldQuantity) {
-      changeSummary.push(`Quantity changed from ${oldQuantity} to ${updateData.quantity}`);
+    if (updateData.paidStatus !== undefined && updateData.paidStatus !== existing.paidStatus) {
+      changeSummary.push(`Payment: "${existing.paidStatus || 'COD'}" → "${updateData.paidStatus}"`);
+    }
+    if (updateData.pointOfContact !== undefined && updateData.pointOfContact !== existing.pointOfContact) {
+      changeSummary.push(`Customer: "${existing.pointOfContact || 'None'}" → "${updateData.pointOfContact}"`);
+    }
+    if (updateData.customerPhone !== undefined && updateData.customerPhone !== existing.customerPhone) {
+      changeSummary.push(`Phone: "${existing.customerPhone || 'None'}" → "${updateData.customerPhone}"`);
+    }
+    if (updateData.quantity !== undefined && Number(updateData.quantity) !== existing.quantity) {
+      changeSummary.push(`Qty: ${existing.quantity} → ${updateData.quantity}`);
+    }
+    if (updateData.unitPrice !== undefined && Number(updateData.unitPrice) !== existing.unitPrice) {
+      changeSummary.push(`Price: ${existing.unitPrice} → ${updateData.unitPrice}`);
+    }
+    if (updateData.deliveryPartner !== undefined && updateData.deliveryPartner !== existing.deliveryPartner) {
+      changeSummary.push(`Courier: "${existing.deliveryPartner || 'None'}" → "${updateData.deliveryPartner}"`);
+    }
+    if (updateData.deliveryFeeCharged !== undefined && Number(updateData.deliveryFeeCharged) !== Number(existing.deliveryFeeCharged || 0)) {
+      changeSummary.push(`Delivery Fee: ${existing.deliveryFeeCharged || 0} → ${updateData.deliveryFeeCharged}`);
     }
     if (updateData.notes !== undefined && updateData.notes !== existing.notes) {
-      changeSummary.push(`Notes updated`);
+      changeSummary.push(`Notes: "${existing.notes || ''}" → "${updateData.notes}"`);
+    }
+    if (updateData.billNo !== undefined && updateData.billNo !== existing.billNo) {
+      changeSummary.push(`Bill No: "${existing.billNo || 'None'}" → "${updateData.billNo}"`);
     }
 
     Object.assign(existing, updateData);
@@ -379,13 +402,22 @@ export const updateSale = async (req, res) => {
       });
     }
 
-    await logAudit({
-      entityId: existing._id,
-      orderId: existing.orderId,
-      action: updateData.status && updateData.status !== oldStatus ? "STATUS_CHANGE" : "UPDATE",
-      changes: changeSummary.length > 0 ? changeSummary.join(", ") : "Order details updated",
-      performedBy: req.user?.username || "System",
-    });
+    // Determine Action label
+    let actionType = "UPDATE";
+    if (updateData.status && updateData.status !== oldStatus) {
+      actionType = "STATUS_CHANGE";
+    }
+
+    // Record Audit Log only if actual changes occurred
+    if (changeSummary.length > 0) {
+      await logAudit({
+        entityId: existing._id,
+        orderId: existing.orderId,
+        action: actionType,
+        changes: changeSummary.join(" | "),
+        performedBy: req.user?.username || "System",
+      });
+    }
 
     const populated = await existing.populate(
       "product",
@@ -428,7 +460,7 @@ export const deleteSale = async (req, res) => {
       entityId: sale._id,
       orderId: sale.orderId,
       action: "DELETE",
-      changes: `Deleted sale order line (Status was: ${sale.status})`,
+      changes: `Deleted sale order line (Status was: ${sale.status}, Qty: ${sale.quantity})`,
       performedBy: req.user?.username || "System",
     });
 
