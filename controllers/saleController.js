@@ -1,7 +1,29 @@
 import Sale from "../models/Sale.js";
 import Product from "../models/Product.js";
+import AuditLog from "../models/AuditLog.js"; // <-- Import AuditLog
 import mongoose from "mongoose";
 import { reconcileStockForSale } from "../services/inventoryService.js";
+
+// Helper to log audit actions safely
+async function logAudit({ entityId, orderId, action, changes, performedBy = "System", session = null }) {
+  try {
+    const logData = {
+      entityType: "Sale",
+      entityId,
+      orderId,
+      action,
+      changes,
+      performedBy,
+    };
+    if (session) {
+      await AuditLog.create([logData], { session });
+    } else {
+      await AuditLog.create(logData);
+    }
+  } catch (err) {
+    console.error("Failed to write audit log:", err);
+  }
+}
 
 /*
  * GET /api/sales
@@ -77,8 +99,7 @@ export const getSales = async (req, res) => {
       ];
     }
 
-    const skip =
-      (Number(page) - 1) * Number(limit);
+    const skip = (Number(page) - 1) * Number(limit);
 
     const [sales, total] = await Promise.all([
       Sale.find(filter)
@@ -110,39 +131,23 @@ export const getSales = async (req, res) => {
 };
 
 /*
- * GET /api/sales/:id
+ * GET /api/sales/:id/logs (New endpoint to fetch audit history for an order)
  */
-export const getSale = async (req, res) => {
+export const getSaleLogs = async (req, res) => {
   try {
-    const sale = await Sale.findById(req.params.id)
-      .populate("product")
-      .populate("location", "name isDefault");
-
-    if (!sale) {
-      return res.status(404).json({
-        message: "Sale not found",
-      });
-    }
-
-    res.json(sale);
+    const logs = await AuditLog.find({ entityId: req.params.id }).sort({ createdAt: -1 });
+    res.json(logs);
   } catch (err) {
-    res.status(500).json({
-      message: err.message,
-    });
+    res.status(500).json({ message: err.message });
   }
 };
 
 /*
  * POST /api/sales
- *
- * Bill numbers are completely manual.
- * The frontend may provide billNo, or leave it empty.
  */
 export const createSale = async (req, res) => {
   try {
-    const product = await Product.findById(
-      req.body.product
-    );
+    const product = await Product.findById(req.body.product);
 
     if (!product) {
       return res.status(400).json({
@@ -162,11 +167,6 @@ export const createSale = async (req, res) => {
 
     const sale = await Sale.create(data);
 
-    /*
-     * Reconcile stock for creation. 
-     * Note: If status is "Returning", inventoryService will naturally treat 
-     * it as in-transit back to warehouse (no stock added back yet).
-     */
     await reconcileStockForSale({
       productId: sale.product,
       oldStatus: null,
@@ -177,6 +177,15 @@ export const createSale = async (req, res) => {
       newLocationId: sale.location || null,
     });
 
+    // Record Audit Log
+    await logAudit({
+      entityId: sale._id,
+      orderId: sale.orderId,
+      action: "CREATE",
+      changes: `Created sale line for product ${product.name} (Qty: ${sale.quantity}, Status: ${sale.status})`,
+      performedBy: req.user?.username || "System",
+    });
+
     const populated = await sale.populate(
       "product",
       "name sku type retailPrice currentStock colors locationStocks"
@@ -185,7 +194,6 @@ export const createSale = async (req, res) => {
     res.status(201).json(populated);
   } catch (err) {
     console.error("createSale error:", err);
-
     res.status(400).json({
       message: err.message,
     });
@@ -194,7 +202,6 @@ export const createSale = async (req, res) => {
 
 /*
  * POST /api/sales/batch
- * Creates multiple sales lines atomically inside a Mongoose transaction session.
  */
 export const createBatchSales = async (req, res) => {
   const session = await mongoose.startSession();
@@ -238,6 +245,15 @@ export const createBatchSales = async (req, res) => {
         newLocationId: sale.location || null,
       });
 
+      await logAudit({
+        entityId: sale._id,
+        orderId: sale.orderId,
+        action: "CREATE",
+        changes: `Batch order line created for ${product.name} (Qty: ${sale.quantity})`,
+        performedBy: req.user?.username || "System",
+        session,
+      });
+
       const populated = await sale.populate({
         path: "product",
         select: "name sku type retailPrice currentStock colors locationStocks",
@@ -261,15 +277,10 @@ export const createBatchSales = async (req, res) => {
 
 /*
  * PUT /api/sales/:id
- *
- * Handles status updates (e.g., moving an item to "Returning" while on transit,
- * or creating/updating replacement lines for exchanges).
  */
 export const updateSale = async (req, res) => {
   try {
-    const existing = await Sale.findById(
-      req.params.id
-    );
+    const existing = await Sale.findById(req.params.id);
 
     if (!existing) {
       return res.status(404).json({
@@ -283,9 +294,7 @@ export const updateSale = async (req, res) => {
     const oldLocationId = existing.location ? existing.location.toString() : null;
     const oldProductId = existing.product.toString();
 
-    const updateData = {
-      ...req.body,
-    };
+    const updateData = { ...req.body };
 
     if (
       updateData.billNo === undefined ||
@@ -294,15 +303,25 @@ export const updateSale = async (req, res) => {
     ) {
       updateData.billNo = null;
     } else {
-      updateData.billNo =
-        String(updateData.billNo).trim();
+      updateData.billNo = String(updateData.billNo).trim();
     }
 
     delete updateData.billIssued;
     delete updateData.billIssuedAt;
 
-    Object.assign(existing, updateData);
+    // Detect what changed for audit log
+    const changeSummary = [];
+    if (updateData.status && updateData.status !== oldStatus) {
+      changeSummary.push(`Status changed from "${oldStatus}" to "${updateData.status}"`);
+    }
+    if (updateData.quantity !== undefined && Number(updateData.quantity) !== oldQuantity) {
+      changeSummary.push(`Quantity changed from ${oldQuantity} to ${updateData.quantity}`);
+    }
+    if (updateData.notes !== undefined && updateData.notes !== existing.notes) {
+      changeSummary.push(`Notes updated`);
+    }
 
+    Object.assign(existing, updateData);
     await existing.save();
 
     const newProductId = existing.product.toString();
@@ -343,6 +362,15 @@ export const updateSale = async (req, res) => {
       });
     }
 
+    // Record Audit Log
+    await logAudit({
+      entityId: existing._id,
+      orderId: existing.orderId,
+      action: updateData.status && updateData.status !== oldStatus ? "STATUS_CHANGE" : "UPDATE",
+      changes: changeSummary.length > 0 ? changeSummary.join(", ") : "Order details updated",
+      performedBy: req.user?.username || "System",
+    });
+
     const populated = await existing.populate(
       "product",
       "name sku type retailPrice currentStock colors locationStocks"
@@ -351,7 +379,6 @@ export const updateSale = async (req, res) => {
     res.json(populated);
   } catch (err) {
     console.error("updateSale error:", err);
-
     res.status(400).json({
       message: err.message,
     });
@@ -363,9 +390,7 @@ export const updateSale = async (req, res) => {
  */
 export const deleteSale = async (req, res) => {
   try {
-    const sale = await Sale.findById(
-      req.params.id
-    );
+    const sale = await Sale.findById(req.params.id);
 
     if (!sale) {
       return res.status(404).json({
@@ -383,6 +408,15 @@ export const deleteSale = async (req, res) => {
       newQuantity: 0,
     });
 
+    // Record Audit Log before deletion
+    await logAudit({
+      entityId: sale._id,
+      orderId: sale.orderId,
+      action: "DELETE",
+      changes: `Deleted sale order line (Status was: ${sale.status})`,
+      performedBy: req.user?.username || "System",
+    });
+
     await sale.deleteOne();
 
     res.json({
@@ -390,7 +424,6 @@ export const deleteSale = async (req, res) => {
     });
   } catch (err) {
     console.error("deleteSale error:", err);
-
     res.status(500).json({
       message: err.message,
     });
