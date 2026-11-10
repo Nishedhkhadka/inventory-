@@ -1,3 +1,21 @@
+/**
+ * Core Zeno workbook import logic.
+ * ─────────────────────────────────
+ * Shared by:
+ *   - backend/scripts/importFromExcel.js  (CLI: `npm run migrate`)
+ *   - backend/controllers/importController.js  (in-app upload, POST /api/import)
+ *
+ * Takes an already-parsed XLSX workbook (from XLSX.readFile or XLSX.read)
+ * and writes Product / Purchase / Sale documents from its Inventory,
+ * Purchase, and Sales sheets. See the CLI script's header comment for the
+ * full rationale on why historical Purchase/Sale rows don't re-run through
+ * the live stock-reconciliation engine.
+ *
+ * Everything this writes lands as normal documents in the same collections
+ * the app's own CRUD screens use — so anything just imported is immediately
+ * visible and editable in Inventory / Sales / Expenses, no separate "import
+ * preview" table involved.
+ */
 import XLSX from "xlsx";
 import Product from "../models/Product.js";
 import Purchase from "../models/Purchase.js";
@@ -5,6 +23,7 @@ import Sale from "../models/Sale.js";
 import Contact from "../models/Contact.js";
 import StockLog from "../models/StockLog.js";
 
+// ───────────────────── header normalization ─────────────────────
 function normalizeKey(k) {
   return String(k || "")
     .toLowerCase()
@@ -498,15 +517,40 @@ export async function runExcelImport(workbook, { reset = false } = {}) {
       productByName.set(key, created);
       stats.productsCreated++;
 
-      const changeReason = String(row.stockChangeReason || "").trim();
-      if (changeReason) {
-        await StockLog.create({
-          product: created._id,
-          previousStock: 0,
-          newStock: initialStock,
-          delta: initialStock,
-          comment: changeReason,
-        });
+      const rawChangeReason = String(row.stockChangeReason || "").trim();
+      if (rawChangeReason) {
+        const logEntries = rawChangeReason.split(" | ");
+        let importedLogsCount = 0;
+
+        for (const entry of logEntries) {
+          const match = entry.match(/^\[(.*?)\]\s*(.*?)\s*\((\d+)→(\d+)\)$/);
+          if (match) {
+            const [, dateStr, commentText, prevStr, newStr] = match;
+            const parsedDate = new Date(dateStr);
+            const prevVal = Number(prevStr);
+            const newVal = Number(newStr);
+
+            await StockLog.create({
+              product: created._id,
+              previousStock: isNaN(prevVal) ? 0 : prevVal,
+              newStock: isNaN(newVal) ? initialStock : newVal,
+              delta: isNaN(newVal) || isNaN(prevVal) ? initialStock : newVal - prevVal,
+              comment: commentText.trim(),
+              createdAt: !isNaN(parsedDate) ? parsedDate : new Date(),
+            });
+            importedLogsCount++;
+          }
+        }
+
+        if (importedLogsCount === 0) {
+          await StockLog.create({
+            product: created._id,
+            previousStock: 0,
+            newStock: initialStock,
+            delta: initialStock,
+            comment: rawChangeReason,
+          });
+        }
       }
     } catch (err) {
       warn(`Could not create product "${name}": ${err.message}`);
