@@ -1,5 +1,6 @@
 import Sale from "../models/Sale.js";
 import Product from "../models/Product.js";
+import mongoose from "mongoose";
 import { reconcileStockForSale } from "../services/inventoryService.js";
 
 /*
@@ -188,6 +189,73 @@ export const createSale = async (req, res) => {
     res.status(400).json({
       message: err.message,
     });
+  }
+};
+
+/*
+ * POST /api/sales/batch
+ * Creates multiple sales lines atomically inside a Mongoose transaction session.
+ */
+export const createBatchSales = async (req, res) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const { lines, shared } = req.body;
+
+    if (!Array.isArray(lines) || lines.length === 0) {
+      return res.status(400).json({ message: "No order lines provided" });
+    }
+
+    const createdSales = [];
+
+    for (const line of lines) {
+      const product = await Product.findById(line.product).session(session);
+      if (!product) {
+        throw new Error(`Product not found: ${line.product}`);
+      }
+
+      const data = {
+        ...shared,
+        ...line,
+        billNo:
+          shared.billNo === undefined ||
+          shared.billNo === null ||
+          String(shared.billNo).trim() === ""
+            ? null
+            : String(shared.billNo).trim(),
+      };
+
+      const [sale] = await Sale.create([data], { session });
+
+      await reconcileStockForSale({
+        productId: sale.product,
+        oldStatus: null,
+        oldLocationId: null,
+        newStatus: sale.status,
+        newQuantity: sale.quantity,
+        newColor: sale.color || null,
+        newLocationId: sale.location || null,
+      });
+
+      const populated = await sale.populate({
+        path: "product",
+        select: "name sku type retailPrice currentStock colors locationStocks",
+        session,
+      });
+
+      createdSales.push(populated);
+    }
+
+    await session.commitTransaction();
+    session.endSession();
+
+    res.status(201).json(createdSales);
+  } catch (err) {
+    await session.abortTransaction();
+    session.endSession();
+    console.error("createBatchSales transaction error:", err);
+    res.status(400).json({ message: err.message });
   }
 };
 
