@@ -38,6 +38,8 @@ const ALIASES = {
   stock: "stock",
   status: "status",
   notes: "notes",
+  invoiceremarks: "invoiceRemarks",
+  billremarks: "invoiceRemarks",
   order: "order",
   product: "product",
   showininventory: "showInInventory",
@@ -720,6 +722,7 @@ export async function runExcelImport(workbook, { reset = false } = {}) {
       pointOfContact: String(row.pointOfContact || "").trim() || undefined,
       customerPhone: String(row.customerPhone || "").trim() || undefined,
       notes: extraNotes.join(" | ") || undefined,
+      invoiceRemarks: String(row.invoiceRemarks || "").trim() || undefined,
       paidStatus: guessPaidStatus(row.paid),
     };
 
