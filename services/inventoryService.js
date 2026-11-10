@@ -9,7 +9,6 @@ export async function initializeDefaultLocationStocks() {
   try {
     let defaultLoc = await Location.findOne({ isDefault: true });
 
-    // Seed default location if missing
     if (!defaultLoc) {
       defaultLoc = await Location.create({
         name: "Main Warehouse",
@@ -22,7 +21,6 @@ export async function initializeDefaultLocationStocks() {
     for (const product of products) {
       let updated = false;
 
-      // 1. If product has colour variants, ensure each variant exists in locationStocks
       if (product.colors && product.colors.length > 0) {
         for (const colorObj of product.colors) {
           const exists = (product.locationStocks || []).some(
@@ -43,7 +41,6 @@ export async function initializeDefaultLocationStocks() {
           }
         }
       } else {
-        // 2. Uncoloured product fallback
         const exists = (product.locationStocks || []).some(
           (ls) =>
             ls.location &&
@@ -71,10 +68,6 @@ export async function initializeDefaultLocationStocks() {
   }
 }
 
-/**
- * Applies a signed unit delta to a product's stock, to the matching colour
- * variant, and to the specified location's stock breakdown, ensuring no negatives.
- */
 async function applyStockDelta(productId, delta, color = null, locationId = null) {
   if (!delta) return null;
 
@@ -86,7 +79,6 @@ async function applyStockDelta(productId, delta, color = null, locationId = null
     if (defaultLoc) targetLocationId = defaultLoc._id;
   }
 
-  // 1. Update variant color stock (clamped at 0)
   if (colorName) {
     const prodCheck = await Product.findOne({ _id: productId, "colors.name": colorName });
     if (prodCheck) {
@@ -99,14 +91,12 @@ async function applyStockDelta(productId, delta, color = null, locationId = null
     }
   }
 
-  // 2. Update global product currentStock (clamped at 0)
   const productDoc = await Product.findById(productId);
   if (productDoc) {
     const newGlobalStock = Math.max(0, (productDoc.currentStock || 0) + delta);
     await Product.updateOne({ _id: productId }, { $set: { currentStock: newGlobalStock } });
   }
 
-  // 3. Update locationStocks breakdown safely without duplicating
   if (targetLocationId) {
     const freshProduct = await Product.findById(productId);
     if (freshProduct) {
@@ -204,50 +194,45 @@ export async function reconcileStockForPurchase({
 }
 
 /**
- * Implements Perpetual Weighted Average Inventory Costing with full bidirectional support (additions and reversals).
+ * Implements Perpetual Weighted Average Inventory Costing with absolute net financial valuation deltas.
  */
 export async function reconcileCostPriceForPurchase({
   productId,
   oldStatus = null,
   oldQuantity = 0,
+  oldCost = 0,
   oldHasProduct = false,
   newStatus = null,
   newQuantity = 0,
+  newCost = 0,
   newHasProduct = false,
-  cost = 0,
 }) {
-  const before = oldStatus && oldHasProduct ? purchaseStockEffect(oldStatus, oldQuantity, true) : 0;
-  const after = newStatus && newHasProduct ? purchaseStockEffect(newStatus, newQuantity, true) : 0;
-  const netUnits = after - before;
-  if (netUnits === 0) return null;
+  const beforeUnits = oldStatus === "Delivered" && oldHasProduct ? oldQuantity : 0;
+  const afterUnits = newStatus === "Delivered" && newHasProduct ? newQuantity : 0;
+  
+  const beforeTotalCost = beforeUnits > 0 ? oldCost : 0;
+  const afterTotalCost = afterUnits > 0 ? newCost : 0;
+
+  const netUnits = afterUnits - beforeUnits;
+  const netCostDelta = afterTotalCost - beforeTotalCost;
+
+  if (netUnits === 0 && netCostDelta === 0) return null;
 
   const product = await Product.findById(productId);
   if (!product) return null;
 
   const currentStock = Math.max(0, product.currentStock || 0);
   const currentAvgCost = product.costPrice || 0;
+  const currentTotalValuation = currentStock * currentAvgCost;
 
   let newAvgCost = currentAvgCost;
+  const newStock = currentStock + netUnits;
 
-  if (netUnits > 0) {
-    // Incoming units (Delivered)
-    const costPerUnit = (cost || 0) / (newQuantity || netUnits);
-    const totalUnits = currentStock + netUnits;
-    newAvgCost = totalUnits > 0 
-      ? (currentAvgCost * currentStock + costPerUnit * netUnits) / totalUnits 
-      : costPerUnit;
+  if (newStock <= 0) {
+    newAvgCost = 0;
   } else {
-    // Reversing units (Status changed from Delivered or Purchase deleted)
-    const removedUnits = Math.abs(netUnits);
-    const remainingStock = currentStock - removedUnits;
-
-    if (remainingStock <= 0) {
-      newAvgCost = 0;
-    } else {
-      const totalCurrentValuation = currentAvgCost * currentStock;
-      const removedValuation = currentAvgCost * removedUnits;
-      newAvgCost = (totalCurrentValuation - removedValuation) / remainingStock;
-    }
+    const newTotalValuation = Math.max(0, currentTotalValuation + netCostDelta);
+    newAvgCost = newTotalValuation / newStock;
   }
 
   const roundedAvgCost = Math.round(Math.max(0, newAvgCost) * 100) / 100;

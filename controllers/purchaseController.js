@@ -58,8 +58,7 @@ export const getPurchases = async (req, res) => {
   }
 };
 
-// GET /api/purchases/tags — distinct tag list, for the filter dropdown and
-// the tag input's autocomplete suggestions.
+// GET /api/purchases/tags
 export const getPurchaseTags = async (req, res) => {
   try {
     const tags = await Purchase.distinct("tags");
@@ -69,8 +68,6 @@ export const getPurchaseTags = async (req, res) => {
   }
 };
 
-// A starting set so the category picker isn't empty on a fresh database —
-// merged with whatever custom categories have actually been used.
 const BASELINE_CATEGORIES = [
   "Inventory",
   "Meta Ads",
@@ -89,8 +86,7 @@ const listPurchaseCategories = async () => {
   return [...new Set([...BASELINE_CATEGORIES, ...used.filter(Boolean)])].sort();
 };
 
-// GET /api/purchases/categories — baseline categories plus any custom ones
-// already in use, for the Expenses page's category picker.
+// GET /api/purchases/categories
 export const getPurchaseCategories = async (req, res) => {
   try {
     const categories = await listPurchaseCategories();
@@ -166,13 +162,11 @@ export const deletePurchaseCategory = async (req, res) => {
       categories,
     });
   } catch (err) {
-    res.status(400).json({ message: err.message });
+    res.status(500).json({ message: err.message });
   }
 };
 
-// GET /api/purchases/suppliers — supplier names and summary metrics only.
-// Supplier/contact data is intentionally manual-only, so we never hydrate this
-// list from the Contact directory or from imported/exported sheet values.
+// GET /api/purchases/suppliers
 export const getPurchaseSuppliers = async (req, res) => {
   try {
     const suppliers = await Purchase.aggregate([
@@ -238,7 +232,6 @@ export const createPurchase = async (req, res) => {
   try {
     const body = req.body;
 
-    // Support batch creation when multi-color items are passed in a single submission
     if (Array.isArray(body.items) && body.items.length > 0) {
       const createdPurchases = [];
       for (const item of body.items) {
@@ -258,11 +251,13 @@ export const createPurchase = async (req, res) => {
           await reconcileCostPriceForPurchase({
             productId: purchase.product,
             oldStatus: null,
+            oldQuantity: 0,
+            oldCost: 0,
             oldHasProduct: false,
             newStatus: purchase.status,
             newQuantity: purchase.quantity || 0,
+            newCost: purchase.cost || 0,
             newHasProduct: true,
-            cost: purchase.cost,
           });
           await reconcileStockForPurchase({
             productId: purchase.product,
@@ -285,25 +280,22 @@ export const createPurchase = async (req, res) => {
       const product = await Product.findById(body.product);
       if (!product)
         return res.status(400).json({ message: "Product not found" });
-      // Keep productName in sync so records stay readable even if the
-      // catalog product is later renamed or removed.
       body.productName = body.productName || product.name;
     }
 
     const purchase = await Purchase.create(body);
 
     if (purchase.product) {
-      // Cost-price update must happen BEFORE the stock change below — it
-      // needs the product's stock level as it stood before this
-      // purchase's units are added.
       await reconcileCostPriceForPurchase({
         productId: purchase.product,
         oldStatus: null,
+        oldQuantity: 0,
+        oldCost: 0,
         oldHasProduct: false,
         newStatus: purchase.status,
         newQuantity: purchase.quantity || 0,
+        newCost: purchase.cost || 0,
         newHasProduct: true,
-        cost: purchase.cost,
       });
       await reconcileStockForPurchase({
         productId: purchase.product,
@@ -326,9 +318,6 @@ export const createPurchase = async (req, res) => {
 };
 
 // PUT /api/purchases/:id
-// Mirrors the sale controller: any change to status/quantity/colour/product
-// on an inventory-linked purchase is reconciled against warehouse stock so
-// only 'Delivered' inventory purchases ever add units, exactly once.
 export const updatePurchase = async (req, res) => {
   try {
     const existing = await Purchase.findById(req.params.id);
@@ -337,6 +326,7 @@ export const updatePurchase = async (req, res) => {
 
     const oldStatus = existing.status;
     const oldQuantity = existing.quantity || 0;
+    const oldCost = existing.cost || 0;
     const oldColor = existing.color || null;
     const oldProductId = existing.product ? existing.product.toString() : null;
 
@@ -354,6 +344,17 @@ export const updatePurchase = async (req, res) => {
 
     if (oldProductId !== newProductId) {
       if (oldProductId) {
+        await reconcileCostPriceForPurchase({
+          productId: oldProductId,
+          oldStatus,
+          oldQuantity,
+          oldCost,
+          oldHasProduct: true,
+          newStatus: null,
+          newQuantity: 0,
+          newCost: 0,
+          newHasProduct: false,
+        });
         await reconcileStockForPurchase({
           productId: oldProductId,
           oldStatus,
@@ -368,11 +369,13 @@ export const updatePurchase = async (req, res) => {
         await reconcileCostPriceForPurchase({
           productId: newProductId,
           oldStatus: null,
+          oldQuantity: 0,
+          oldCost: 0,
           oldHasProduct: false,
           newStatus: existing.status,
           newQuantity: existing.quantity || 0,
+          newCost: existing.cost || 0,
           newHasProduct: true,
-          cost: existing.cost,
         });
         await reconcileStockForPurchase({
           productId: newProductId,
@@ -389,11 +392,12 @@ export const updatePurchase = async (req, res) => {
         productId: newProductId,
         oldStatus,
         oldQuantity,
+        oldCost,
         oldHasProduct: true,
         newStatus: existing.status,
         newQuantity: existing.quantity || 0,
+        newCost: existing.cost || 0,
         newHasProduct: true,
-        cost: existing.cost,
       });
       await reconcileStockForPurchase({
         productId: newProductId,
@@ -426,6 +430,18 @@ export const deletePurchase = async (req, res) => {
       return res.status(404).json({ message: "Purchase not found" });
 
     if (purchase.product) {
+      await reconcileCostPriceForPurchase({
+        productId: purchase.product,
+        oldStatus: purchase.status,
+        oldQuantity: purchase.quantity || 0,
+        oldCost: purchase.cost || 0,
+        oldHasProduct: true,
+        newStatus: null,
+        newQuantity: 0,
+        newCost: 0,
+        newHasProduct: false,
+      });
+
       await reconcileStockForPurchase({
         productId: purchase.product,
         oldStatus: purchase.status,
@@ -442,4 +458,4 @@ export const deletePurchase = async (req, res) => {
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
-}
+};
