@@ -155,6 +155,7 @@ const SALE_STATUSES = [
   "Delivered",
   "Packed",
   "Transit",
+  "Returning",
   "Returned",
   "Damaged",
   "In progress",
