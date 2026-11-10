@@ -1,6 +1,6 @@
 import Sale from "../models/Sale.js";
 import Product from "../models/Product.js";
-import AuditLog from "../models/AuditLog.js"; // <-- Import AuditLog
+import AuditLog from "../models/AuditLog.js";
 import mongoose from "mongoose";
 import { reconcileStockForSale } from "../services/inventoryService.js";
 
@@ -131,7 +131,26 @@ export const getSales = async (req, res) => {
 };
 
 /*
- * GET /api/sales/:id/logs (New endpoint to fetch audit history for an order)
+ * GET /api/sales/:id (Added missing getSale controller)
+ */
+export const getSale = async (req, res) => {
+  try {
+    const sale = await Sale.findById(req.params.id)
+      .populate("product", "name sku type retailPrice currentStock colors locationStocks")
+      .populate("location", "name isDefault");
+
+    if (!sale) {
+      return res.status(404).json({ message: "Sale order not found" });
+    }
+
+    res.json(sale);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
+/*
+ * GET /api/sales/:id/logs
  */
 export const getSaleLogs = async (req, res) => {
   try {
@@ -177,7 +196,6 @@ export const createSale = async (req, res) => {
       newLocationId: sale.location || null,
     });
 
-    // Record Audit Log
     await logAudit({
       entityId: sale._id,
       orderId: sale.orderId,
@@ -309,7 +327,6 @@ export const updateSale = async (req, res) => {
     delete updateData.billIssued;
     delete updateData.billIssuedAt;
 
-    // Detect what changed for audit log
     const changeSummary = [];
     if (updateData.status && updateData.status !== oldStatus) {
       changeSummary.push(`Status changed from "${oldStatus}" to "${updateData.status}"`);
@@ -362,7 +379,6 @@ export const updateSale = async (req, res) => {
       });
     }
 
-    // Record Audit Log
     await logAudit({
       entityId: existing._id,
       orderId: existing.orderId,
@@ -408,7 +424,6 @@ export const deleteSale = async (req, res) => {
       newQuantity: 0,
     });
 
-    // Record Audit Log before deletion
     await logAudit({
       entityId: sale._id,
       orderId: sale.orderId,
