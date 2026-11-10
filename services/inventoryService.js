@@ -204,7 +204,7 @@ export async function reconcileStockForPurchase({
 }
 
 /**
- * Implements Perpetual Weighted Average Inventory Costing with full reversal support.
+ * Implements Perpetual Weighted Average Inventory Costing with full bidirectional support (additions and reversals).
  */
 export async function reconcileCostPriceForPurchase({
   productId,
@@ -219,29 +219,34 @@ export async function reconcileCostPriceForPurchase({
   const before = oldStatus && oldHasProduct ? purchaseStockEffect(oldStatus, oldQuantity, true) : 0;
   const after = newStatus && newHasProduct ? purchaseStockEffect(newStatus, newQuantity, true) : 0;
   const netUnits = after - before;
-  if (netUnits === 0 || !newQuantity) return null;
+  if (netUnits === 0) return null;
 
   const product = await Product.findById(productId);
   if (!product) return null;
 
-  const costPerUnit = (cost || 0) / newQuantity;
   const currentStock = Math.max(0, product.currentStock || 0);
   const currentAvgCost = product.costPrice || 0;
 
-  let newAvgCost;
-  const newStock = currentStock + netUnits;
+  let newAvgCost = currentAvgCost;
 
   if (netUnits > 0) {
+    // Incoming units (Delivered)
+    const costPerUnit = (cost || 0) / (newQuantity || netUnits);
     const totalUnits = currentStock + netUnits;
     newAvgCost = totalUnits > 0 
       ? (currentAvgCost * currentStock + costPerUnit * netUnits) / totalUnits 
       : costPerUnit;
   } else {
-    if (newStock <= 0) {
+    // Reversing units (Status changed from Delivered or Purchase deleted)
+    const removedUnits = Math.abs(netUnits);
+    const remainingStock = currentStock - removedUnits;
+
+    if (remainingStock <= 0) {
       newAvgCost = 0;
     } else {
-      const numerator = (currentAvgCost * currentStock) + (netUnits * costPerUnit);
-      newAvgCost = numerator / newStock;
+      const totalCurrentValuation = currentAvgCost * currentStock;
+      const removedValuation = currentAvgCost * removedUnits;
+      newAvgCost = (totalCurrentValuation - removedValuation) / remainingStock;
     }
   }
 
