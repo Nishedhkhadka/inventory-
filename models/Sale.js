@@ -81,6 +81,7 @@ const saleSchema = new mongoose.Schema(
       type: String,
       trim: true,
     },
+    invoiceRemarks: { type: String }, // Optional remark printed on the invoice
     paidStatus: {
       type: String,
       enum: ["COD", "Paid", "Unpaid"],
