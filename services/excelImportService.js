@@ -1,28 +1,10 @@
-/**
- * Core Zeno workbook import logic.
- * ─────────────────────────────────
- * Shared by:
- *   - backend/scripts/importFromExcel.js  (CLI: `npm run migrate`)
- *   - backend/controllers/importController.js  (in-app upload, POST /api/import)
- *
- * Takes an already-parsed XLSX workbook (from XLSX.readFile or XLSX.read)
- * and writes Product / Purchase / Sale documents from its Inventory,
- * Purchase, and Sales sheets. See the CLI script's header comment for the
- * full rationale on why historical Purchase/Sale rows don't re-run through
- * the live stock-reconciliation engine.
- *
- * Everything this writes lands as normal documents in the same collections
- * the app's own CRUD screens use — so anything just imported is immediately
- * visible and editable in Inventory / Sales / Expenses, no separate "import
- * preview" table involved.
- */
 import XLSX from "xlsx";
 import Product from "../models/Product.js";
 import Purchase from "../models/Purchase.js";
 import Sale from "../models/Sale.js";
 import Contact from "../models/Contact.js";
+import StockLog from "../models/StockLog.js";
 
-// ───────────────────── header normalization ─────────────────────
 function normalizeKey(k) {
   return String(k || "")
     .toLowerCase()
@@ -75,6 +57,10 @@ const ALIASES = {
   suppliercompany: "supplierCompany",
   suppliernotes: "supplierNotes",
   tags: "tags",
+  stockchangereason: "stockChangeReason",
+  stockchangehistoryreason: "stockChangeReason",
+  stockchangecomment: "stockChangeReason",
+  reason: "stockChangeReason",
 };
 
 function normalizeRow(row) {
@@ -411,6 +397,7 @@ export async function runExcelImport(workbook, { reset = false } = {}) {
       Purchase.deleteMany({}),
       Sale.deleteMany({}),
       Contact.deleteMany({}),
+      StockLog.deleteMany({}),
     ]);
   }
 
@@ -494,13 +481,14 @@ export async function runExcelImport(workbook, { reset = false } = {}) {
     }
 
     const sku = String(row.itemId || "").trim();
+    const initialStock = toNumber(row.stock, 0);
     const doc = {
       name,
       sku: sku || undefined,
       type: guessProductType(row.type, name),
       retailPrice: toNumber(row.price, 0),
       costPrice: toNumber(row.costPrice, 0),
-      currentStock: toNumber(row.stock, 0),
+      currentStock: initialStock,
       lowStockAlert: toNumber(row.lowStockAlert, 5),
       colors: parseColorBreakdown(row.colorBreakdown),
     };
@@ -509,6 +497,17 @@ export async function runExcelImport(workbook, { reset = false } = {}) {
       const created = await Product.create(doc);
       productByName.set(key, created);
       stats.productsCreated++;
+
+      const changeReason = String(row.stockChangeReason || "").trim();
+      if (changeReason) {
+        await StockLog.create({
+          product: created._id,
+          previousStock: 0,
+          newStock: initialStock,
+          delta: initialStock,
+          comment: changeReason,
+        });
+      }
     } catch (err) {
       warn(`Could not create product "${name}": ${err.message}`);
     }

@@ -4,6 +4,7 @@ import Sale from "../models/Sale.js";
 import Purchase from "../models/Purchase.js";
 import Product from "../models/Product.js";
 import Contact from "../models/Contact.js";
+import StockLog from "../models/StockLog.js";
 import { getPnLData } from "./pnlData.js";
 
 function dateRangeMatch(field, from, to) {
@@ -20,14 +21,12 @@ function dateRangeMatch(field, from, to) {
 
 const money = (n) => Number(n || 0);
 
-// Shared between the standalone Sales export and the combined
-// export-everything workbook, so the two never drift apart.
 const SALES_COLUMNS = [
   { header: "Order", key: "orderId", width: 16 },
   { header: "Bill No", key: "billNo", width: 16 },
   { header: "Product", key: "product", width: 24 },
   { header: "Colour", key: "color", width: 12 },
-  { header: "Status", key: "status", width: 14 }, // Supports "Returning", "Returned", "Delivered", etc.
+  { header: "Status", key: "status", width: 14 },
   { header: "Order date", key: "orderDate", width: 14 },
   { header: "Quantity", key: "quantity", width: 10 },
   { header: "Regular unit price", key: "unitPrice", width: 16 },
@@ -51,7 +50,7 @@ function salesRow(s) {
     billNo: s.billNo  || "",
     product: s.product?.name || "—",
     color: s.color || "",
-    status: s.status, // Exports "Returning" status accurately
+    status: s.status,
     orderDate: s.orderDate ? s.orderDate.toISOString().slice(0, 10) : "",
     quantity: s.quantity,
     unitPrice: money(s.unitPrice),
@@ -117,9 +116,12 @@ const PRODUCT_COLUMNS = [
   { header: "Low stock alert", key: "lowStockAlert", width: 16 },
   { header: "Colour breakdown", key: "colors", width: 30 },
   { header: "Stock value", key: "stockValue", width: 14 },
+  { header: "Stock change reason", key: "stockChangeReason", width: 30 },
 ];
 
-function productRow(p) {
+function productRow(p, logsMap = new Map()) {
+  const logs = logsMap.get(p._id.toString()) || [];
+  const reasonText = logs.map((l) => `[${new Date(l.createdAt).toLocaleDateString()}] ${l.comment} (${l.previousStock}→${l.newStock})`).join(" | ");
   return {
     sku: p.sku || "",
     name: p.name,
@@ -130,6 +132,7 @@ function productRow(p) {
     lowStockAlert: p.lowStockAlert,
     colors: (p.colors || []).map((c) => `${c.name}: ${c.stock}`).join(", "),
     stockValue: money(p.currentStock * p.retailPrice),
+    stockChangeReason: reasonText || "",
   };
 }
 
@@ -155,7 +158,6 @@ function contactRow(contact) {
   };
 }
 
-// GET /api/sales/export?from=&to=&status =
 export const exportSales = async (req, res) => {
   try {
     const { from, to, status } = req.query;
@@ -188,7 +190,6 @@ export const exportSales = async (req, res) => {
   }
 };
 
-// GET /api/purchases/export?from=&to=&category=&status=
 export const exportPurchases = async (req, res) => {
   try {
     const { from, to, category, status } = req.query;
@@ -224,7 +225,6 @@ export const exportPurchases = async (req, res) => {
   }
 };
 
-// GET /api/analytics/pnl/export?from=&to=&format=xlsx|pdf
 export const exportPnL = async (req, res) => {
   try {
     const { from, to, format = "xlsx" } = req.query;
@@ -383,7 +383,6 @@ function sendPnLPdf(res, pnl) {
   doc.end();
 }
 
-// GET /api/products/export?type=&lowStockOnly=
 export const exportProducts = async (req, res) => {
   try {
     const { type, lowStockOnly } = req.query;
@@ -395,12 +394,21 @@ export const exportProducts = async (req, res) => {
       products = products.filter((p) => p.currentStock <= p.lowStockAlert);
     }
 
+    const productIds = products.map((p) => p._id);
+    const logs = await StockLog.find({ product: { $in: productIds } }).sort({ createdAt: -1 });
+    const logsMap = new Map();
+    logs.forEach((l) => {
+      const pid = l.product.toString();
+      if (!logsMap.has(pid)) logsMap.set(pid, []);
+      logsMap.get(pid).push(l);
+    });
+
     const workbook = new ExcelJS.Workbook();
     const sheet = workbook.addWorksheet("Inventory");
     sheet.columns = PRODUCT_COLUMNS;
     sheet.getRow(1).font = { bold: true };
 
-    products.forEach((p) => sheet.addRow(productRow(p)));
+    products.forEach((p) => sheet.addRow(productRow(p, logsMap)));
 
     res.setHeader(
       "Content-Type",
@@ -417,7 +425,6 @@ export const exportProducts = async (req, res) => {
   }
 };
 
-// GET /api/export/all?from=&to=
 export const exportAll = async (req, res) => {
   try {
     const { from, to } = req.query;
@@ -435,6 +442,15 @@ export const exportAll = async (req, res) => {
       Contact.find({ isActive: { $ne: false } }).sort({ name: 1 }),
     ]);
 
+    const productIds = products.map((p) => p._id);
+    const logs = await StockLog.find({ product: { $in: productIds } }).sort({ createdAt: -1 });
+    const logsMap = new Map();
+    logs.forEach((l) => {
+      const pid = l.product.toString();
+      if (!logsMap.has(pid)) logsMap.set(pid, []);
+      logsMap.get(pid).push(l);
+    });
+
     const workbook = new ExcelJS.Workbook();
 
     const salesSheet = workbook.addWorksheet("Sales");
@@ -450,7 +466,7 @@ export const exportAll = async (req, res) => {
     const inventorySheet = workbook.addWorksheet("Inventory");
     inventorySheet.columns = PRODUCT_COLUMNS;
     inventorySheet.getRow(1).font = { bold: true };
-    products.forEach((p) => inventorySheet.addRow(productRow(p)));
+    products.forEach((p) => inventorySheet.addRow(productRow(p, logsMap)));
 
     const contactsSheet = workbook.addWorksheet("Suppliers & contacts");
     contactsSheet.columns = CONTACT_COLUMNS;
